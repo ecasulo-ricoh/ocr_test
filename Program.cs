@@ -14,7 +14,7 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "OCR Test API",
         Version = "v1",
-        Description = "API para pruebas de OCR con documentos de DocuWare"
+        Description = "API para pruebas de OCR con documentos de DocuWare y análisis de facturas"
     });
 
     // Incluir comentarios XML
@@ -31,6 +31,9 @@ builder.Services.AddSingleton<IDocuWareConfigurationService, DocuWareConfigurati
 builder.Services.AddSingleton<IDocuWareConnectionService, DocuWareConnectionService>();
 builder.Services.AddScoped<IDocuWareDocumentService, DocuWareDocumentService>();
 builder.Services.AddScoped<IOcrService, OcrService>();
+
+// Registrar servicio de análisis de facturas
+builder.Services.AddScoped<IInvoiceAnalysisService, InvoiceAnalysisService>();
 
 // Configurar logging
 builder.Logging.ClearProviders();
@@ -68,5 +71,6 @@ app.MapGet("/health", () => "OK").WithName("Health");
 // Log de inicio con URLs correctas
 app.Logger.LogInformation("?? OCR Test API iniciada correctamente");
 app.Logger.LogInformation("?? Swagger disponible en la raíz de la aplicación");
+app.Logger.LogInformation("?? Análisis de facturas disponible en /api/invoices");
 
 app.Run();

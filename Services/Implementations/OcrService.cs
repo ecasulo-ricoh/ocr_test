@@ -51,16 +51,20 @@ namespace OCR_test.Services.Implementations
                 // Detectar si es PDF o imagen
                 if (IsPdf(fileBytes))
                 {
-                    _logger.LogInformation("Detectado PDF, convirtiendo a imágenes...");
+                    _logger.LogInformation("Detectado PDF, procesando SOLO LA PRIMERA PÁGINA para optimizar velocidad...");
                     
-                    // Convertir PDF a imágenes
+                    // Convertir SOLO la primera página del PDF a imagen
                     using var pdfStream = new MemoryStream(fileBytes);
-                    var images = Conversion.ToImages(pdfStream);
                     
-                    foreach (var image in images)
+                    // *** LIMITACIÓN: Solo procesar la primera página ***
+                    var firstPageImages = Conversion.ToImages(pdfStream)
+                        .Take(1) // Solo tomar la primera página
+                        .ToList();
+                    
+                    foreach (var image in firstPageImages)
                     {
                         pageCount++;
-                        _logger.LogInformation("Procesando página {PageNumber} del PDF...", pageCount);
+                        _logger.LogInformation("Procesando SOLO página {PageNumber} del PDF (limitado a primera página)...", pageCount);
                         
                         // Convertir SKBitmap a array de bytes
                         using var imageStream = new MemoryStream();
@@ -74,14 +78,15 @@ namespace OCR_test.Services.Implementations
                         var pageText = page.GetText();
                         var pageConfidence = page.GetMeanConfidence();
                         
-                        extractedText += $"\n--- Página {pageCount} ---\n{pageText}";
-                        totalConfidence += pageConfidence;
+                        extractedText = pageText; // Solo el texto de la primera página
+                        totalConfidence = pageConfidence;
                         
-                        _logger.LogInformation("Página {PageNumber} procesada: {CharCount} caracteres, confianza: {Confidence:F2}%", 
-                            pageCount, pageText.Length, pageConfidence);
+                        _logger.LogInformation("Primera página procesada: {CharCount} caracteres, confianza: {Confidence:F2}%", 
+                            pageText.Length, pageConfidence);
+                        
+                        // Liberar recursos de la imagen inmediatamente
+                        image.Dispose();
                     }
-                    
-                    totalConfidence = pageCount > 0 ? totalConfidence / pageCount : 0;
                 }
                 else
                 {
@@ -98,7 +103,7 @@ namespace OCR_test.Services.Implementations
 
                 stopwatch.Stop();
 
-                _logger.LogInformation("OCR completado en {ElapsedMs}ms. Páginas: {PageCount}, Confianza promedio: {Confidence:F2}%", 
+                _logger.LogInformation("OCR completado en {ElapsedMs}ms. Páginas procesadas: {PageCount} (limitado a primera página), Confianza: {Confidence:F2}%", 
                     stopwatch.ElapsedMilliseconds, pageCount, totalConfidence);
 
                 return new OcrResultDto
@@ -107,7 +112,7 @@ namespace OCR_test.Services.Implementations
                     ExtractedText = extractedText,
                     Confidence = totalConfidence,
                     Language = lang,
-                    Message = $"Texto extraído exitosamente de {pageCount} página(s) con {totalConfidence:F2}% de confianza promedio",
+                    Message = $"Texto extraído exitosamente de la primera página con {totalConfidence:F2}% de confianza (optimizado para velocidad)",
                     ProcessedAt = DateTime.UtcNow,
                     ProcessingTimeMs = stopwatch.ElapsedMilliseconds
                 };
