@@ -409,6 +409,207 @@ namespace OCR_test.Controllers
                 RequestedAt = DateTime.UtcNow
             });
         }
+
+        /// <summary>
+        /// Análisis SIMPLIFICADO de factura argentina - solo campos esenciales para máxima velocidad
+        /// </summary>
+        /// <param name="documentId">ID del documento</param>
+        /// <param name="fileCabinetId">ID del FileCabinet (opcional)</param>
+        /// <param name="language">Idioma para OCR (opcional, por defecto: eng+spa)</param>
+        /// <returns>JSON simplificado con solo los 5 campos esenciales</returns>
+        [HttpPost("analyze-simplified/{documentId}")]
+        [ProducesResponseType(typeof(SimplifiedInvoiceResultDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> AnalyzeInvoiceSimplified(
+            int documentId,
+            [FromQuery] string? fileCabinetId = null,
+            [FromQuery] string? language = null)
+        {
+            try
+            {
+                var fcId = fileCabinetId ?? _configService.GetFileCabinetId();
+                _logger.LogInformation("Iniciando análisis SIMPLIFICADO para documento {DocumentId}", documentId);
+
+                var analysisResult = await _invoiceAnalysisService.AnalyzeInvoiceSimplifiedAsync(
+                    documentId, fcId, language);
+
+                // Respuesta ultra-simplificada
+                return Ok(new
+                {
+                    success = analysisResult.Success,
+                    message = analysisResult.Message,
+                    
+                    // Solo los datos esenciales
+                    data = analysisResult.Data,
+                    
+                    warnings = analysisResult.Warnings,
+                    
+                    // Info mínima de procesamiento
+                    processing = new
+                    {
+                        documentId = documentId,
+                        processingTimeMs = analysisResult.ProcessingTimeMs,
+                        processedAt = analysisResult.ProcessedAt
+                    }
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                _logger.LogWarning(ex, "Documento {DocumentId} no encontrado para análisis simplificado", documentId);
+                return NotFound(new
+                {
+                    success = false,
+                    message = ex.Message,
+                    documentId = documentId
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error en análisis simplificado del documento {DocumentId}", documentId);
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error en análisis simplificado",
+                    error = ex.Message,
+                    documentId = documentId
+                });
+            }
+        }
+
+        /// <summary>
+        /// Análisis SIMPLIFICADO de archivo subido - solo campos esenciales para máxima velocidad
+        /// </summary>
+        /// <param name="file">Archivo de imagen o PDF de la factura</param>
+        /// <param name="language">Idioma para OCR (opcional)</param>
+        /// <returns>JSON simplificado con solo los 5 campos esenciales</returns>
+        [HttpPost("analyze-simplified-upload")]
+        [ProducesResponseType(typeof(SimplifiedInvoiceResultDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> AnalyzeInvoiceSimplifiedUpload(
+            IFormFile file,
+            [FromQuery] string? language = null)
+        {
+            try
+            {
+                if (file == null || file.Length == 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "No se proporcionó archivo o el archivo está vacío"
+                    });
+                }
+
+                // Validar tipo de archivo
+                var allowedTypes = new[] { "image/jpeg", "image/png", "image/tiff", "application/pdf" };
+                if (!allowedTypes.Contains(file.ContentType.ToLower()))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = $"Tipo de archivo no soportado: {file.ContentType}. Tipos permitidos: {string.Join(", ", allowedTypes)}"
+                    });
+                }
+
+                _logger.LogInformation("Iniciando análisis SIMPLIFICADO para archivo: {FileName} ({FileSize} bytes)", 
+                    file.FileName, file.Length);
+
+                using var stream = file.OpenReadStream();
+                var analysisResult = await _invoiceAnalysisService.AnalyzeInvoiceSimplifiedFromStreamAsync(stream, language);
+
+                // Respuesta ultra-simplificada
+                return Ok(new
+                {
+                    success = analysisResult.Success,
+                    message = analysisResult.Message,
+                    
+                    // Solo los datos esenciales
+                    data = analysisResult.Data,
+                    
+                    warnings = analysisResult.Warnings,
+                    
+                    // Info mínima de procesamiento
+                    processing = new
+                    {
+                        fileName = file.FileName,
+                        fileSize = file.Length,
+                        processingTimeMs = analysisResult.ProcessingTimeMs,
+                        processedAt = analysisResult.ProcessedAt
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error en análisis simplificado del archivo: {FileName}", file?.FileName);
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error en análisis simplificado",
+                    error = ex.Message,
+                    fileName = file?.FileName
+                });
+            }
+        }
+
+        /// <summary>
+        /// Análisis SIMPLIFICADO de texto - solo campos esenciales
+        /// </summary>
+        /// <param name="request">Texto a analizar</param>
+        /// <returns>JSON simplificado con solo los 5 campos esenciales</returns>
+        [HttpPost("analyze-simplified-text")]
+        [ProducesResponseType(typeof(SimplifiedInvoiceResultDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public IActionResult AnalyzeInvoiceSimplifiedText([FromBody] AnalyzeTextRequest request)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(request.Text))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "El texto a analizar no puede estar vacío"
+                    });
+                }
+
+                _logger.LogInformation("Iniciando análisis SIMPLIFICADO de texto ({Length} caracteres)", 
+                    request.Text.Length);
+
+                var analysisResult = _invoiceAnalysisService.AnalyzeInvoiceSimplifiedFromText(request.Text);
+
+                // Respuesta ultra-simplificada
+                return Ok(new
+                {
+                    success = analysisResult.Success,
+                    message = analysisResult.Message,
+                    
+                    // Solo los datos esenciales
+                    data = analysisResult.Data,
+                    
+                    warnings = analysisResult.Warnings,
+                    
+                    // Info mínima de procesamiento
+                    processing = new
+                    {
+                        textLength = request.Text.Length,
+                        processedAt = DateTime.UtcNow
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error en análisis simplificado de texto");
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error en análisis simplificado",
+                    error = ex.Message
+                });
+            }
+        }
     }
 
     /// <summary>
@@ -417,5 +618,29 @@ namespace OCR_test.Controllers
     public class AnalyzeTextRequest
     {
         public required string Text { get; set; }
+    }
+
+    /// <summary>
+    /// Resultado simplificado para análisis de factura
+    /// </summary>
+    public class SimplifiedInvoiceResultDto
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+        public object Data { get; set; } = null!;
+        public string[] Warnings { get; set; } = Array.Empty<string>();
+        
+        // Información mínima de procesamiento
+        public ProcessingInfo Processing { get; set; } = null!;
+    }
+
+    /// <summary>
+    /// Información de procesamiento
+    /// </summary>
+    public class ProcessingInfo
+    {
+        public required int DocumentId { get; set; }
+        public required long ProcessingTimeMs { get; set; }
+        public required DateTime ProcessedAt { get; set; }
     }
 }

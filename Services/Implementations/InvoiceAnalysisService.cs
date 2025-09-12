@@ -827,5 +827,518 @@ namespace OCR_test.Services.Implementations
 
             return confidenceValues.Any() ? confidenceValues.Average() : 0f;
         }
+
+        // *** NUEVOS MÉTODOS SIMPLIFICADOS ***
+
+        public async Task<SimplifiedInvoiceResultDto> AnalyzeInvoiceSimplifiedAsync(
+            int documentId,
+            string? fileCabinetId = null,
+            string? language = null)
+        {
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                _logger.LogInformation("Iniciando análisis SIMPLIFICADO de factura para documento {DocumentId}", documentId);
+
+                // Realizar OCR primero (solo primera página para velocidad)
+                var ocrResult = await _ocrService.ExtractTextFromDocumentAsync(documentId, fileCabinetId);
+
+                if (!ocrResult.Success || string.IsNullOrEmpty(ocrResult.ExtractedText))
+                {
+                    return new SimplifiedInvoiceResultDto
+                    {
+                        Success = false,
+                        Message = $"Error en OCR: {ocrResult.Message}",
+                        ProcessedAt = DateTime.UtcNow,
+                        ProcessingTimeMs = stopwatch.ElapsedMilliseconds
+                    };
+                }
+
+                // Analizar el texto extraído
+                var analysis = AnalyzeInvoiceSimplifiedFromText(ocrResult.ExtractedText);
+
+                stopwatch.Stop();
+                analysis.ProcessingTimeMs = stopwatch.ElapsedMilliseconds;
+                analysis.ProcessedAt = DateTime.UtcNow;
+
+                _logger.LogInformation("Análisis SIMPLIFICADO completado para documento {DocumentId} en {ElapsedMs}ms", 
+                    documentId, stopwatch.ElapsedMilliseconds);
+
+                return analysis;
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                _logger.LogError(ex, "Error en análisis SIMPLIFICADO del documento {DocumentId}", documentId);
+
+                return new SimplifiedInvoiceResultDto
+                {
+                    Success = false,
+                    Message = $"Error en análisis simplificado: {ex.Message}",
+                    ProcessedAt = DateTime.UtcNow,
+                    ProcessingTimeMs = stopwatch.ElapsedMilliseconds
+                };
+            }
+        }
+
+        public async Task<SimplifiedInvoiceResultDto> AnalyzeInvoiceSimplifiedFromStreamAsync(
+            Stream stream,
+            string? language = null)
+        {
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                _logger.LogInformation("Iniciando análisis SIMPLIFICADO desde stream");
+
+                // Realizar OCR primero (solo primera página para velocidad)
+                var ocrResult = await _ocrService.ExtractTextFromStreamAsync(stream, language);
+
+                if (!ocrResult.Success || string.IsNullOrEmpty(ocrResult.ExtractedText))
+                {
+                    return new SimplifiedInvoiceResultDto
+                    {
+                        Success = false,
+                        Message = $"Error en OCR: {ocrResult.Message}",
+                        ProcessedAt = DateTime.UtcNow,
+                        ProcessingTimeMs = stopwatch.ElapsedMilliseconds
+                    };
+                }
+
+                // Analizar el texto extraído
+                var analysis = AnalyzeInvoiceSimplifiedFromText(ocrResult.ExtractedText);
+
+                stopwatch.Stop();
+                analysis.ProcessingTimeMs = stopwatch.ElapsedMilliseconds;
+                analysis.ProcessedAt = DateTime.UtcNow;
+
+                _logger.LogInformation("Análisis SIMPLIFICADO completado desde stream en {ElapsedMs}ms", 
+                    stopwatch.ElapsedMilliseconds);
+
+                return analysis;
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                _logger.LogError(ex, "Error en análisis SIMPLIFICADO desde stream: {Error}", ex.Message);
+
+                return new SimplifiedInvoiceResultDto
+                {
+                    Success = false,
+                    Message = $"Error en análisis simplificado: {ex.Message}",
+                    ProcessedAt = DateTime.UtcNow,
+                    ProcessingTimeMs = stopwatch.ElapsedMilliseconds
+                };
+            }
+        }
+
+        public SimplifiedInvoiceResultDto AnalyzeInvoiceSimplifiedFromText(string extractedText)
+        {
+            try
+            {
+                _logger.LogInformation("Analizando texto SIMPLIFICADO ({Length} caracteres)", extractedText.Length);
+
+                var data = new SimplifiedInvoiceDataDto();
+                var warnings = new List<string>();
+                var confidenceScores = new List<float>();
+
+                // 1. DETECTAR TIPO DE FACTURA (A o B) Y CÓDIGO (001 o 006)
+                var detectionResult = DetectArgentineInvoiceTypeAndCodeSimplified(extractedText);
+                if (detectionResult.tipoDetectado != null || detectionResult.codigoDetectado != null)
+                {
+                    // Auto-completar si solo se detectó uno de los dos
+                    if (detectionResult.tipoDetectado != null && detectionResult.codigoDetectado == null)
+                    {
+                        // Se detectó letra, inferir código
+                        detectionResult.codigoDetectado = detectionResult.tipoDetectado == "A" ? "001" : "006";
+                        _logger.LogInformation("? Auto-completado: Tipo {Tipo} ? Código {Codigo}", 
+                            detectionResult.tipoDetectado, detectionResult.codigoDetectado);
+                    }
+                    else if (detectionResult.codigoDetectado != null && detectionResult.tipoDetectado == null)
+                    {
+                        // Se detectó código, inferir letra
+                        detectionResult.tipoDetectado = detectionResult.codigoDetectado == "001" ? "A" : "B";
+                        _logger.LogInformation("? Auto-completado: Código {Codigo} ? Tipo {Tipo}", 
+                            detectionResult.codigoDetectado, detectionResult.tipoDetectado);
+                    }
+
+                    data.TipoFactura = detectionResult.tipoDetectado;
+                    data.CodigoFactura = detectionResult.codigoDetectado;
+                    confidenceScores.Add(detectionResult.confidence);
+                    
+                    _logger.LogInformation("? Tipo de factura: {Tipo}, Código: {Codigo}", 
+                        data.TipoFactura, data.CodigoFactura);
+                }
+                else
+                {
+                    warnings.Add("No se pudo detectar el tipo de factura (A o B) ni el código (001 o 006)");
+                    data.RequiereActualizacionManual = true;
+                }
+
+                // 2. DETECTAR NÚMERO DE FACTURA
+                var numeroFactura = DetectInvoiceNumber(extractedText);
+                if (numeroFactura != null)
+                {
+                    data.NroFactura = numeroFactura.Value;
+                    confidenceScores.Add(numeroFactura.Confidence);
+                    _logger.LogInformation("? Número de factura detectado: {Numero}", numeroFactura.Value);
+                }
+                else
+                {
+                    warnings.Add("No se pudo detectar el número de factura");
+                }
+
+                // 3. DETECTAR FECHA DE FACTURA
+                var fechaFactura = DetectInvoiceDate(extractedText);
+                if (fechaFactura != null)
+                {
+                    // Formatear fecha como DD/mm/yyyy
+                    data.FechaFactura = fechaFactura.ParsedDate?.ToString("dd/MM/yyyy");
+                    confidenceScores.Add(fechaFactura.Confidence);
+                    _logger.LogInformation("? Fecha de factura detectada: {Fecha}", data.FechaFactura);
+                }
+                else
+                {
+                    warnings.Add("No se pudo detectar la fecha de factura");
+                }
+
+                // 4. DETECTAR CUIT DEL CLIENTE (no del vendedor)
+                var cuitCliente = DetectClientCuit(extractedText);
+                if (cuitCliente != null)
+                {
+                    data.CuitCliente = cuitCliente.Value;
+                    confidenceScores.Add(cuitCliente.Confidence);
+                    _logger.LogInformation("? CUIT del cliente detectado: {Cuit}", cuitCliente.Value);
+                }
+                else
+                {
+                    warnings.Add("No se pudo detectar el CUIT del cliente");
+                }
+
+                // 5. DETECTAR RAZÓN SOCIAL DEL CLIENTE
+                var razonSocial = DetectClientName(extractedText);
+                if (razonSocial != null)
+                {
+                    data.RazonSocialCliente = razonSocial.Value;
+                    confidenceScores.Add(razonSocial.Confidence);
+                    _logger.LogInformation("? Razón social del cliente detectada: {RazonSocial}", razonSocial.Value);
+                }
+                else
+                {
+                    warnings.Add("No se pudo detectar la razón social del cliente");
+                }
+
+                // Calcular confianza general
+                data.Confianza = confidenceScores.Any() ? confidenceScores.Average() : 0f;
+
+                var fieldsDetected = new[] { 
+                    data.TipoFactura, 
+                    data.CodigoFactura,
+                    data.NroFactura, 
+                    data.FechaFactura, 
+                    data.CuitCliente, 
+                    data.RazonSocialCliente 
+                }.Count(f => !string.IsNullOrEmpty(f));
+
+                return new SimplifiedInvoiceResultDto
+                {
+                    Success = true,
+                    Message = $"Análisis simplificado completado. Campos detectados: {fieldsDetected}/6. Confianza: {data.Confianza:F2}",
+                    Data = data,
+                    Warnings = warnings
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error en análisis simplificado de texto");
+
+                return new SimplifiedInvoiceResultDto
+                {
+                    Success = false,
+                    Message = $"Error en análisis simplificado: {ex.Message}"
+                };
+            }
+        }
+
+        // *** MÉTODOS DE DETECCIÓN ESPECÍFICOS Y SIMPLIFICADOS ***
+        private ExtractedCodeDto? DetectArgentineInvoiceTypeSimplified(string text)
+        {
+            // Solo usar los patrones más efectivos para velocidad
+            var strategies = new[]
+            {
+                ("InvoiceTypeAGrupo", _patterns["InvoiceTypeAGrupo"], 0.98f, "A", "001"),
+                ("InvoiceTypeBGrupo", _patterns["InvoiceTypeBGrupo"], 0.98f, "B", "006"),
+                ("InvoiceTypeAFactura", _patterns["InvoiceTypeAFactura"], 0.96f, "A", "001"),
+                ("InvoiceTypeBFactura", _patterns["InvoiceTypeBFactura"], 0.96f, "B", "006"),
+                ("InvoiceTypeASimple", _patterns["InvoiceTypeASimple"], 0.92f, "A", "001"),
+                ("InvoiceTypeBSimple", _patterns["InvoiceTypeBSimple"], 0.92f, "B", "006")
+            };
+
+            foreach (var (patternName, pattern, confidence, tipo, codigo) in strategies)
+            {
+                var match = pattern.Match(text);
+                if (match.Success)
+                {
+                    return new ExtractedCodeDto
+                    {
+                        Type = tipo == "A" ? "InvoiceTypeA" : "InvoiceTypeB",
+                        Value = tipo,
+                        Pattern = patternName,
+                        Confidence = confidence
+                    };
+                }
+            }
+
+            // Fallback: correlación
+            var lettersA = _patterns["LetterAAlone"].Matches(text);
+            var lettersB = _patterns["LetterBAlone"].Matches(text);
+            var codes001 = _patterns["Code001"].Matches(text);
+            var codes006 = _patterns["Code006"].Matches(text);
+
+            if (lettersA.Count > 0 && codes001.Count > 0)
+            {
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeA",
+                    Value = "A",
+                    Pattern = "CorrelationA001",
+                    Confidence = 0.75f
+                };
+            }
+
+            if (lettersB.Count > 0 && codes006.Count > 0)
+            {
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeB",
+                    Value = "B",
+                    Pattern = "CorrelationB006",
+                    Confidence = 0.75f
+                };
+            }
+
+            return null;
+        }
+
+        private (string? tipoDetectado, string? codigoDetectado, float confidence) DetectArgentineInvoiceTypeAndCodeSimplified(string text)
+        {
+            _logger.LogInformation("Detectando tipo y código de factura argentina...");
+
+            string? tipoDetectado = null;
+            string? codigoDetectado = null;
+            float maxConfidence = 0f;
+
+            // Estrategia 1: Detectar tipo (A/B) con patrones existentes
+            var strategies = new[]
+            {
+                ("InvoiceTypeAGrupo", _patterns["InvoiceTypeAGrupo"], 0.98f, "A", "001"),
+                ("InvoiceTypeBGrupo", _patterns["InvoiceTypeBGrupo"], 0.98f, "B", "006"),
+                ("InvoiceTypeAFactura", _patterns["InvoiceTypeAFactura"], 0.96f, "A", "001"),
+                ("InvoiceTypeBFactura", _patterns["InvoiceTypeBFactura"], 0.96f, "B", "006"),
+                ("InvoiceTypeASimple", _patterns["InvoiceTypeASimple"], 0.92f, "A", "001"),
+                ("InvoiceTypeBSimple", _patterns["InvoiceTypeBSimple"], 0.92f, "B", "006")
+            };
+
+            foreach (var (patternName, pattern, confidence, tipo, codigo) in strategies)
+            {
+                var match = pattern.Match(text);
+                if (match.Success)
+                {
+                    tipoDetectado = tipo;
+                    codigoDetectado = codigo;
+                    maxConfidence = confidence;
+                    _logger.LogInformation("? Detectado con patrón {Pattern}: Tipo {Tipo}, Código {Codigo}", 
+                        patternName, tipo, codigo);
+                    return (tipoDetectado, codigoDetectado, maxConfidence);
+                }
+            }
+
+            // Estrategia 2: Detectar solo códigos 001/006 si no se detectó el tipo
+            var codes001 = _patterns["Code001"].Matches(text);
+            var codes006 = _patterns["Code006"].Matches(text);
+
+            if (codes001.Count > 0 && codes006.Count == 0)
+            {
+                codigoDetectado = "001";
+                maxConfidence = 0.85f;
+                _logger.LogInformation("? Detectado solo código 001 (sin letra A explícita)");
+            }
+            else if (codes006.Count > 0 && codes001.Count == 0)
+            {
+                codigoDetectado = "006";
+                maxConfidence = 0.85f;
+                _logger.LogInformation("? Detectado solo código 006 (sin letra B explícita)");
+            }
+
+            // Estrategia 3: Detectar solo letras A/B si no se detectó el código
+            if (tipoDetectado == null && codigoDetectado == null)
+            {
+                var lettersA = _patterns["LetterAAlone"].Matches(text);
+                var lettersB = _patterns["LetterBAlone"].Matches(text);
+
+                if (lettersA.Count > 0 && lettersB.Count == 0)
+                {
+                    tipoDetectado = "A";
+                    maxConfidence = 0.75f;
+                    _logger.LogInformation("? Detectado solo letra A (sin código 001 explícito)");
+                }
+                else if (lettersB.Count > 0 && lettersA.Count == 0)
+                {
+                    tipoDetectado = "B";
+                    maxConfidence = 0.75f;
+                    _logger.LogInformation("? Detectado solo letra B (sin código 006 explícito)");
+                }
+
+                // Estrategia 4: Correlación entre letras y códigos
+                if (tipoDetectado == null && lettersA.Count > 0 && codes001.Count > 0)
+                {
+                    tipoDetectado = "A";
+                    codigoDetectado = "001";
+                    maxConfidence = 0.8f;
+                    _logger.LogInformation("? Detectado por correlación: A + 001");
+                }
+                else if (tipoDetectado == null && lettersB.Count > 0 && codes006.Count > 0)
+                {
+                    tipoDetectado = "B";
+                    codigoDetectado = "006";
+                    maxConfidence = 0.8f;
+                    _logger.LogInformation("? Detectado por correlación: B + 006");
+                }
+            }
+
+            if (tipoDetectado == null && codigoDetectado == null)
+            {
+                _logger.LogWarning("? No se pudo detectar tipo ni código de factura argentina");
+            }
+
+            return (tipoDetectado, codigoDetectado, maxConfidence);
+        }
+
+        private ExtractedCodeDto? DetectInvoiceNumber(string text)
+        {
+            // Patrón específico para números de factura como "N° 00704-00128327"
+            var patterns = new[]
+            {
+                new Regex(@"N[°º""\*]?\s*(\d{5}-\d{8})", RegexOptions.IgnoreCase),
+                new Regex(@"(?:factura|invoice|n[úu]mero|number|no\.?)\s*:?\s*([A-Z0-9\-]{8,20})", RegexOptions.IgnoreCase),
+                new Regex(@"(\d{4,5}-\d{6,10})", RegexOptions.IgnoreCase)
+            };
+
+            foreach (var pattern in patterns)
+            {
+                var match = pattern.Match(text);
+                if (match.Success)
+                {
+                    return new ExtractedCodeDto
+                    {
+                        Type = "InvoiceNumber",
+                        Value = match.Groups[1].Value.Trim(),
+                        Pattern = "InvoiceNumber",
+                        Confidence = 0.9f
+                    };
+                }
+            }
+
+            return null;
+        }
+
+        private ExtractedDateDto? DetectInvoiceDate(string text)
+        {
+            // Patrón específico para fechas como "Fecha: 20/05/2025"
+            var patterns = new[]
+            {
+                new Regex(@"(?:fecha|date):\s*(\d{1,2}\/\d{1,2}\/\d{4})", RegexOptions.IgnoreCase),
+                new Regex(@"\b(\d{1,2}\/\d{1,2}\/\d{4})\b"),
+                new Regex(@"\b(\d{1,2}-\d{1,2}-\d{4})\b"),
+                new Regex(@"\b(\d{1,2}\.\d{1,2}\.\d{4})\b")
+            };
+
+            foreach (var pattern in patterns)
+            {
+                var match = pattern.Match(text);
+                if (match.Success)
+                {
+                    if (DateTime.TryParseExact(match.Groups[1].Value, 
+                        new[] { "dd/MM/yyyy", "dd-MM-yyyy", "dd.MM.yyyy" }, 
+                        CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+                    {
+                        return new ExtractedDateDto
+                        {
+                            Type = "InvoiceDate",
+                            ParsedDate = date,
+                            OriginalText = match.Groups[1].Value,
+                            Format = "DD/MM/YYYY",
+                            Confidence = 0.9f
+                        };
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private ExtractedCodeDto? DetectClientCuit(string text)
+        {
+            // Buscar CUITs, pero tomar el segundo (cliente), no el primero (vendedor)
+            var cuitPattern = new Regex(@"\b(\d{2}-\d{8}-\d{1})\b");
+            var matches = cuitPattern.Matches(text);
+
+            if (matches.Count >= 2)
+            {
+                // Tomar el segundo CUIT (cliente)
+                return new ExtractedCodeDto
+                {
+                    Type = "ClientCUIT",
+                    Value = matches[1].Groups[1].Value,
+                    Pattern = "CUIT",
+                    Confidence = 0.95f
+                };
+            }
+            else if (matches.Count == 1)
+            {
+                // Si solo hay uno, asumir que es del cliente
+                return new ExtractedCodeDto
+                {
+                    Type = "ClientCUIT",
+                    Value = matches[0].Groups[1].Value,
+                    Pattern = "CUIT",
+                    Confidence = 0.8f
+                };
+            }
+
+            return null;
+        }
+
+        private ExtractedCodeDto? DetectClientName(string text)
+        {
+            // Buscar razón social cerca de la sección SRES o DOMICILIO
+            var patterns = new[]
+            {
+                new Regex(@"SRES\.?:\s*([A-Za-z0-9\s\.]{10,80})(?:\s+N[°º]|$|\n)", RegexOptions.IgnoreCase),
+                new Regex(@"(?:SRES|SEÑORES?)\.?:\s*([A-Za-z0-9\s\.]{10,80})", RegexOptions.IgnoreCase)
+            };
+
+            foreach (var pattern in patterns)
+            {
+                var match = pattern.Match(text);
+                if (match.Success)
+                {
+                    var clientName = match.Groups[1].Value.Trim();
+                    if (clientName.Length > 5) // Validar que no sea muy corto
+                    {
+                        return new ExtractedCodeDto
+                        {
+                            Type = "ClientName",
+                            Value = clientName,
+                            Pattern = "ClientName",
+                            Confidence = 0.85f
+                        };
+                    }
+                }
+            }
+
+            return null;
+        }
     }
 }

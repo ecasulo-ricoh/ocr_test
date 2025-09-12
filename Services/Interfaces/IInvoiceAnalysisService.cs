@@ -51,5 +51,36 @@ namespace OCR_test.Services.Interfaces
         /// <param name="extractedText">Texto extraído por OCR</param>
         /// <returns>Análisis estructurado del texto como factura</returns>
         InvoiceAnalysisResultDto AnalyzeInvoiceFromText(string extractedText);
+
+        // *** NUEVOS MÉTODOS SIMPLIFICADOS ***
+        
+        /// <summary>
+        /// Análisis simplificado de factura desde documento - solo campos esenciales
+        /// </summary>
+        /// <param name="documentId">ID del documento</param>
+        /// <param name="fileCabinetId">ID del FileCabinet</param>
+        /// <param name="language">Idioma para OCR</param>
+        /// <returns>Análisis simplificado con solo los campos esenciales</returns>
+        Task<SimplifiedInvoiceResultDto> AnalyzeInvoiceSimplifiedAsync(
+            int documentId,
+            string? fileCabinetId = null,
+            string? language = null);
+
+        /// <summary>
+        /// Análisis simplificado de factura desde stream - solo campos esenciales
+        /// </summary>
+        /// <param name="stream">Stream del archivo</param>
+        /// <param name="language">Idioma para OCR</param>
+        /// <returns>Análisis simplificado con solo los campos esenciales</returns>
+        Task<SimplifiedInvoiceResultDto> AnalyzeInvoiceSimplifiedFromStreamAsync(
+            Stream stream,
+            string? language = null);
+
+        /// <summary>
+        /// Análisis simplificado de texto - solo campos esenciales
+        /// </summary>
+        /// <param name="extractedText">Texto extraído por OCR</param>
+        /// <returns>Análisis simplificado con solo los campos esenciales</returns>
+        SimplifiedInvoiceResultDto AnalyzeInvoiceSimplifiedFromText(string extractedText);
     }
 }
