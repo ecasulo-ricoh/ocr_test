@@ -31,6 +31,11 @@ namespace OCR_test.Services.Interfaces
         Task LogBatchSummaryAsync(string batchId, int totalProcessed, int successful, int failed, int skipped, Dictionary<string, int> issueStats);
 
         /// <summary>
+        /// Obtiene estadísticas de los archivos de log para monitoreo
+        /// </summary>
+        Task<Dictionary<string, object>> GetLogStatisticsAsync();
+
+        /// <summary>
         /// Limpia archivos de log antiguos según la configuración
         /// </summary>
         Task CleanupOldLogsAsync();

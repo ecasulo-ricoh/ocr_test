@@ -14,17 +14,20 @@ namespace OCR_test.Services.Implementations
         private readonly IDocuWareConnectionService _connectionService;
         private readonly IDocuWareConfigurationService _configService;
         private readonly IInvoiceAnalysisService _invoiceAnalysisService;
+        private readonly ICsvLoggingService _csvLoggingService;
         private readonly ILogger<DocuWareBulkUpdateService> _logger;
 
         public DocuWareBulkUpdateService(
             IDocuWareConnectionService connectionService,
             IDocuWareConfigurationService configService,
             IInvoiceAnalysisService invoiceAnalysisService,
+            ICsvLoggingService csvLoggingService,
             ILogger<DocuWareBulkUpdateService> logger)
         {
             _connectionService = connectionService;
             _configService = configService;
             _invoiceAnalysisService = invoiceAnalysisService;
+            _csvLoggingService = csvLoggingService;
             _logger = logger;
         }
 
@@ -44,6 +47,8 @@ namespace OCR_test.Services.Implementations
         public async Task<BulkUpdateResultDto> BulkUpdateDocumentsAsync(BulkUpdateInternalRequestDto request)
         {
             var stopwatch = Stopwatch.StartNew();
+            var batchId = $"batch_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid().ToString("N")[..8]}";
+            
             var result = new BulkUpdateResultDto
             {
                 Metadata = new BulkUpdateMetadataDto
@@ -57,13 +62,23 @@ namespace OCR_test.Services.Implementations
                 }
             };
 
+            // Estadísticas para el reporte CSV
+            var issueStats = new Dictionary<string, int>
+            {
+                ["CuitIssues"] = 0,
+                ["ValidationIssues"] = 0,
+                ["OcrFailures"] = 0,
+                ["DocuWareFailures"] = 0,
+                ["TipoEDetected"] = 0  // Nueva estadística para tipo E
+            };
+
             try
             {
                 var mode = request.DryRun ? "DRY-RUN" : "ACTUALIZACIÓN REAL";
                 var updateStrategy = request.OnlyUpdateEmptyFields ? "SOLO CAMPOS VACÍOS" : "SOBRESCRIBIR TODOS";
                 
-                _logger.LogInformation("?? Iniciando actualización masiva en modo {Mode} con estrategia {Strategy}. Documentos a procesar: {Count}", 
-                    mode, updateStrategy, request.DocumentCount);
+                _logger.LogInformation("?? Iniciando actualización masiva [{BatchId}] en modo {Mode} con estrategia {Strategy}. Documentos a procesar: {Count}", 
+                    batchId, mode, updateStrategy, request.DocumentCount);
 
                 // Obtener lista de documentos usando GetAllDocuments
                 var documentIds = await GetDocumentListAsync(result.Metadata.FileCabinetId, request.DocumentCount);
@@ -72,6 +87,10 @@ namespace OCR_test.Services.Implementations
                 {
                     result.Success = false;
                     result.Message = "No se encontraron documentos para procesar";
+                    
+                    // Registrar batch summary vacío
+                    await _csvLoggingService.LogBatchSummaryAsync(batchId, 0, 0, 0, 0, issueStats);
+                    
                     return result;
                 }
 
@@ -112,6 +131,10 @@ namespace OCR_test.Services.Implementations
                             detail.Errors.Add($"OCR falló: {ocrResult.Message}");
                             result.FailedUpdates++;
                             result.Errors.Add($" Documento {documentId}: Error en OCR");
+                        
+                            // Registrar fallo de OCR en CSV
+                            await _csvLoggingService.LogOcrFailureAsync(documentId, ocrResult.Message ?? "Error desconocido en OCR");
+                            issueStats["OcrFailures"]++;
                         }
                         else
                         {
@@ -126,6 +149,13 @@ namespace OCR_test.Services.Implementations
                                 Confianza = ocrResult.Data.Confianza
                             };
 
+                            // Registrar estadísticas especiales
+                            if (ocrResult.Data.TipoFactura == "E")
+                            {
+                                issueStats["TipoEDetected"]++;
+                                _logger.LogInformation("? Detectado tipo de factura E (nuevo tipo) en documento {DocumentId}", documentId);
+                            }
+
                             // 3. Validar y preparar campos para actualización
                             var validationResult = await ValidateAndPrepareFieldsAsync(
                                 documentId, ocrResult.Data, result.Metadata.FileCabinetId, request.OnlyUpdateEmptyFields);
@@ -133,6 +163,42 @@ namespace OCR_test.Services.Implementations
                             detail.UpdatedFields = validationResult.ValidatedFields;
                             detail.SkippedFields = validationResult.SkippedFields;
                             detail.ValidationWarnings = validationResult.ValidationWarnings;
+
+                            // Registrar problemas de validación en CSV
+                            if (validationResult.ValidationWarnings.Any())
+                            {
+                                issueStats["ValidationIssues"]++;
+                                foreach (var warning in validationResult.ValidationWarnings)
+                                {
+                                    // Determinar qué campo causó el problema
+                                    var fieldName = "Unknown";
+                                    var detectedValue = "Unknown";
+                                    
+                                    if (warning.Contains("LETRA_DOCUMENTO"))
+                                    {
+                                        fieldName = "LETRA_DOCUMENTO";
+                                        detectedValue = ocrResult.Data.TipoFactura ?? "";
+                                    }
+                                    else if (warning.Contains("CODIGO_DOCUMENTO"))
+                                    {
+                                        fieldName = "CODIGO_DOCUMENTO";
+                                        detectedValue = ocrResult.Data.CodigoFactura ?? "";
+                                    }
+                                    else if (warning.Contains("CUIT_CLIENTE"))
+                                    {
+                                        fieldName = "CUIT_CLIENTE";
+                                        detectedValue = ocrResult.Data.CuitCliente ?? "";
+                                        
+                                        // Caso especial para problemas de CUIT
+                                        await _csvLoggingService.LogCuitIssueAsync(documentId, detectedValue, 
+                                            "Validation Error", warning);
+                                        issueStats["CuitIssues"]++;
+                                    }
+                                    
+                                    await _csvLoggingService.LogValidationIssueAsync(documentId, fieldName, 
+                                        detectedValue, warning);
+                                }
+                            }
 
                             // 4. Verificar si hay campos para actualizar
                             if (HasFieldsToUpdate(validationResult.ValidatedFields))
@@ -157,6 +223,11 @@ namespace OCR_test.Services.Implementations
                                 {
                                     result.FailedUpdates++;
                                     result.Errors.Add($" Documento {documentId}: Error en actualización");
+                                    
+                                    // Registrar fallo de DocuWare en CSV
+                                    await _csvLoggingService.LogDocuWareUpdateFailureAsync(documentId, 
+                                        updateResult.Message, SerializeFields(validationResult.ValidatedFields));
+                                    issueStats["DocuWareFailures"]++;
                                 }
                                 else
                                 {
@@ -203,6 +274,10 @@ namespace OCR_test.Services.Implementations
                         result.FailedUpdates++;
                         result.TotalProcessed++;
                         result.Errors.Add($" Documento {documentId}: Error inesperado");
+                        
+                        // Registrar error inesperado
+                        await _csvLoggingService.LogOcrFailureAsync(documentId, $"Error inesperado: {ex.Message}");
+                        issueStats["OcrFailures"]++;
                     }
                 }
 
@@ -225,8 +300,16 @@ namespace OCR_test.Services.Implementations
                     $"Procesados: {result.TotalProcessed}, Modificados: {result.SuccessfulUpdates}, " +
                     $"Errores: {result.FailedUpdates}, Sin cambios: {result.SkippedDocuments}";
 
+                // Registrar resumen del batch en CSV
+                await _csvLoggingService.LogBatchSummaryAsync(batchId, result.TotalProcessed, 
+                    result.SuccessfulUpdates, result.FailedUpdates, result.SkippedDocuments, issueStats);
+
                 _logger.LogInformation("?? Actualización masiva completada en {ElapsedMs}ms. {Message}",
                     stopwatch.ElapsedMilliseconds, result.Message);
+                    
+                _logger.LogInformation("?? Estadísticas CSV: Errores OCR: {OCR}, Validación: {Val}, DocuWare: {DW}, CUIT: {CUIT}, Tipo E: {TipoE}",
+                    issueStats["OcrFailures"], issueStats["ValidationIssues"], issueStats["DocuWareFailures"], 
+                    issueStats["CuitIssues"], issueStats["TipoEDetected"]);
 
                 return result;
             }
@@ -240,6 +323,10 @@ namespace OCR_test.Services.Implementations
                 result.Errors.Add(ex.Message);
                 result.Metadata.EndTime = DateTime.UtcNow;
                 result.Metadata.TotalProcessingTimeMs = stopwatch.ElapsedMilliseconds;
+
+                // Registrar batch fallido
+                await _csvLoggingService.LogBatchSummaryAsync(batchId, result.TotalProcessed, 
+                    result.SuccessfulUpdates, result.FailedUpdates, result.SkippedDocuments, issueStats);
 
                 return result;
             }

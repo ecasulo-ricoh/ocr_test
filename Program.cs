@@ -38,6 +38,9 @@ builder.Services.AddScoped<IInvoiceAnalysisService, InvoiceAnalysisService>();
 // Registrar servicio de actualización masiva
 builder.Services.AddScoped<IDocuWareBulkUpdateService, DocuWareBulkUpdateService>();
 
+// Registrar servicio de logging CSV para reportes detallados
+builder.Services.AddScoped<ICsvLoggingService, CsvLoggingService>();
+
 // Configurar logging
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
@@ -76,5 +79,6 @@ app.Logger.LogInformation("?? OCR Test API iniciada correctamente");
 app.Logger.LogInformation("?? Swagger disponible en la raíz de la aplicación");
 app.Logger.LogInformation("?? Análisis de facturas disponible en /api/invoices");
 app.Logger.LogInformation("?? Actualización masiva disponible en /api/docuware");
+app.Logger.LogInformation("?? Reportes CSV habilitados para análisis detallado");
 
 app.Run();

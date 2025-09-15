@@ -185,6 +185,7 @@ namespace OCR_test.Services.Implementations
             if (!_csvLoggingEnabled)
             {
                 stats["enabled"] = false;
+                stats["message"] = "CSV logging está deshabilitado en la configuración";
                 return stats;
             }
 
@@ -193,32 +194,68 @@ namespace OCR_test.Services.Implementations
                 stats["enabled"] = true;
                 stats["logsDirectory"] = _logsDirectory;
                 stats["retentionDays"] = _retentionDays;
+                stats["maxFileSizeMB"] = _maxFileSizeMB;
+
+                if (!Directory.Exists(_logsDirectory))
+                {
+                    stats["totalFiles"] = 0;
+                    stats["message"] = "Directorio de logs no existe - se creará en el primer uso";
+                    return stats;
+                }
 
                 var files = Directory.GetFiles(_logsDirectory, "*.csv");
                 stats["totalFiles"] = files.Length;
 
                 var fileStats = new List<object>();
+                var totalRecords = 0;
+                var totalSizeKB = 0.0;
+
                 foreach (var file in files)
                 {
                     var fileInfo = new FileInfo(file);
                     var lineCount = await CountLinesAsync(file);
+                    var recordCount = Math.Max(0, lineCount - 1); // Excluir header
+                    totalRecords += recordCount;
+                    var sizeKB = Math.Round(fileInfo.Length / 1024.0, 2);
+                    totalSizeKB += sizeKB;
                     
                     fileStats.Add(new
                     {
                         fileName = Path.GetFileName(file),
-                        sizeKB = Math.Round(fileInfo.Length / 1024.0, 2),
+                        sizeKB = sizeKB,
                         createdAt = fileInfo.CreationTimeUtc,
                         lastModified = fileInfo.LastWriteTimeUtc,
-                        recordCount = lineCount - 1 // Excluir header
+                        recordCount = recordCount,
+                        ageInDays = Math.Round((DateTime.UtcNow - fileInfo.CreationTimeUtc).TotalDays, 1)
                     });
                 }
 
                 stats["files"] = fileStats;
+                stats["summary"] = new
+                {
+                    totalRecords = totalRecords,
+                    totalSizeKB = Math.Round(totalSizeKB, 2),
+                    averageRecordsPerFile = files.Length > 0 ? Math.Round((double)totalRecords / files.Length, 1) : 0,
+                    oldestFileAge = files.Any() ? 
+                        Math.Round(files.Select(f => (DateTime.UtcNow - new FileInfo(f).CreationTimeUtc).TotalDays).Max(), 1) : 0
+                };
+                
+                stats["reportTypes"] = new
+                {
+                    cuitIssues = fileStats.Any(f => ((dynamic)f).fileName.ToString().Contains("cuit_issues")),
+                    validationIssues = fileStats.Any(f => ((dynamic)f).fileName.ToString().Contains("validation_issues")),
+                    ocrFailures = fileStats.Any(f => ((dynamic)f).fileName.ToString().Contains("ocr_failures")),
+                    docuwareFailures = fileStats.Any(f => ((dynamic)f).fileName.ToString().Contains("docuware_failures")),
+                    batchSummaries = fileStats.Any(f => ((dynamic)f).fileName.ToString().Contains("batch_summaries"))
+                };
+
+                stats["lastUpdated"] = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting log statistics");
                 stats["error"] = ex.Message;
+                stats["enabled"] = false;
             }
 
             return stats;
