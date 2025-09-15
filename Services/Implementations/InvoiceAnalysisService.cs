@@ -18,7 +18,7 @@ namespace OCR_test.Services.Implementations
         private static readonly Dictionary<string, Regex> _patterns = new()
         {
             // Números de factura
-            ["InvoiceNumber"] = new Regex(@"(?:factura|invoice|n[úu]mero|number|no\.?)\s*:?\s*([A-Z0-9\-]+)", RegexOptions.IgnoreCase),
+            ["InvoiceNumber"] = new Regex(@"(?:factura|invoice|n[áu]mero|number|no\.?)\s*:?\s*([A-Z0-9\-]+)", RegexOptions.IgnoreCase),
             ["InvoiceNumberAlt"] = new Regex(@"([A-Z]{1,3}\d{6,12})", RegexOptions.IgnoreCase),
             
             // RFC / Tax ID (México)
@@ -31,59 +31,82 @@ namespace OCR_test.Services.Implementations
             ["RUT"] = new Regex(@"(\d{1,2}\.\d{3}\.\d{3}-[\dkK])", RegexOptions.IgnoreCase),
             
             // *** PATRONES MEJORADOS PARA FACTURAS ARGENTINAS ***
-            // Adaptados para el formato específico: CODIGO N" 001
+            // Adaptados para el formato específico: CODIGO N° 001, 006 y 019
             
             // Tipo de factura A con código 001 - Patrones básicos
-            ["InvoiceTypeA"] = new Regex(@"([A])\s*(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1\b", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeACode"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1\s*.*?([A])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeALetter"] = new Regex(@"([A])\s*(?:\n|\r\n?|\s)*(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeA"] = new Regex(@"([A])\s*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1\b", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeACode"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1\s*.*?([A])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeALetter"] = new Regex(@"([A])\s*(?:\n|\r\n?|\s)*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
             // Tipo de factura B con código 006 - Patrones básicos
-            ["InvoiceTypeB"] = new Regex(@"([B])\s*(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6\b", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeBCode"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6\s*.*?([B])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeBLetter"] = new Regex(@"([B])\s*(?:\n|\r\n?|\s)*(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeB"] = new Regex(@"([B])\s*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6\b", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeBCode"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6\s*.*?([B])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeBLetter"] = new Regex(@"([B])\s*(?:\n|\r\n?|\s)*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
-            // *** NUEVOS PATRONES ESPECÍFICOS PARA EL FORMATO DETECTADO ***
-            // Para capturar "A FACTURA" seguido de "CODIGO N" 001" en cualquier parte del texto
+            // Tipo de factura E con código 019 - Patrones básicos
+            ["InvoiceTypeE"] = new Regex(@"([E])\s*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19\b", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeECode"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19\s*.*?([E])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeELetter"] = new Regex(@"([E])\s*(?:\n|\r\n?|\s)*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeEFactura"] = new Regex(@"([E])\s+FACTURA[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeEGrupo"] = new Regex(@"GRUPO\s+([E])[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeEFlexible"] = new Regex(@"([E])\s*[\r\n\s]*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeESimple"] = new Regex(@"\b([E])\b[\s\S]{0,200}(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeEProximity"] = new Regex(@"([E])[\s\S]{0,100}(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
-            // Patrón específico para "A FACTURA" + "CODIGO N" 001"
-            ["InvoiceTypeAFactura"] = new Regex(@"([A])\s+FACTURA[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            // *** PATRONES ESPECÍFICOS PARA EL FORMATO DETECTADO ***
+            // Para capturar "A FACTURA" seguido de "CODIGO N° 001" en cualquier parte del texto
             
-            // Patrón específico para "B FACTURA" + "CODIGO N" 006"
-            ["InvoiceTypeBFactura"] = new Regex(@"([B])\s+FACTURA[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            // Patrón específico para "A FACTURA" + "CODIGO N° 001"
+            ["InvoiceTypeAFactura"] = new Regex(@"([A])\s+FACTURA[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            
+            // Patrón específico para "B FACTURA" + "CODIGO N° 006"
+            ["InvoiceTypeBFactura"] = new Regex(@"([B])\s+FACTURA[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            
+            // Patrón específico para "E FACTURA" + "CODIGO N° 019"
+            ["InvoiceTypeEFactura"] = new Regex(@"([E])\s+FACTURA[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
             // Patrones para detectar "GRUPO A" específicamente
-            ["InvoiceTypeAGrupo"] = new Regex(@"GRUPO\s+([A])[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeBGrupo"] = new Regex(@"GRUPO\s+([B])[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeAGrupo"] = new Regex(@"GRUPO\s+([A])[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeBGrupo"] = new Regex(@"GRUPO\s+([B])[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeEGrupo"] = new Regex(@"GRUPO\s+([E])[\s\S]*?(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
-            // Patrón flexible para A seguido de "CODIGO N" 001" con saltos de línea y espacios variables
-            ["InvoiceTypeAFlexible"] = new Regex(@"([A])\s*[\r\n\s]*(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            // Patrón flexible para A seguido de "CODIGO N° 001" con saltos de línea y espacios variables
+            ["InvoiceTypeAFlexible"] = new Regex(@"([A])\s*[\r\n\s]*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
-            // Patrón flexible para B seguido de "CODIGO N" 006" con saltos de línea y espacios variables  
-            ["InvoiceTypeBFlexible"] = new Regex(@"([B])\s*[\r\n\s]*(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            // Patrón flexible para B seguido de "CODIGO N° 006" con saltos de línea y espacios variables  
+            ["InvoiceTypeBFlexible"] = new Regex(@"([B])\s*[\r\n\s]*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            
+            // Patrón flexible para E seguido de "CODIGO N° 019" con saltos de línea y espacios variables  
+            ["InvoiceTypeEFlexible"] = new Regex(@"([E])\s*[\r\n\s]*(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
             // Patrones inversos - Código primero, letra después
-            ["InvoiceTypeAReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1\s*[\r\n\s]*([A])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeBReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6\s*[\r\n\s]*([B])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeAReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1\s*[\r\n\s]*([A])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeBReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6\s*[\r\n\s]*([B])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeEReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19\s*[\r\n\s]*([E])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
-            // Patrones muy flexibles para detectar A/B cerca de 001/006 (dentro de cierto rango de caracteres)
-            ["InvoiceTypeAProximity"] = new Regex(@"([A])[\s\S]{0,100}(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeBProximity"] = new Regex(@"([B])[\s\S]{0,100}(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            // Patrones muy flexibles para detectar A/B/E cerca de 001/006/019 (dentro de cierto rango de caracteres)
+            ["InvoiceTypeAProximity"] = new Regex(@"([A])[\s\S]{0,100}(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeBProximity"] = new Regex(@"([B])[\s\S]{0,100}(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeEProximity"] = new Regex(@"([E])[\s\S]{0,100}(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
             // Patrones para detectar códigos cerca de letras (proximidad inversa)
-            ["InvoiceTypeAProximityReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1[\s\S]{0,100}([A])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeBProximityReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6[\s\S]{0,100}([B])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeAProximityReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1[\s\S]{0,100}([A])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeBProximityReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6[\s\S]{0,100}([B])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeEProximityReverse"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19[\s\S]{0,100}([E])", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
             // *** PATRONES SIMPLIFICADOS PARA DETECCIÓN BÁSICA ***
-            // Solo buscar A o B seguido de cualquier variación de código + 001/006
-            ["InvoiceTypeASimple"] = new Regex(@"\b([A])\b[\s\S]{0,200}(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
-            ["InvoiceTypeBSimple"] = new Regex(@"\b([B])\b[\s\S]{0,200}(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            // Solo buscar A, B o E seguido de cualquier variación de código + 001/006/019
+            ["InvoiceTypeASimple"] = new Regex(@"\b([A])\b[\s\S]{0,200}(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*1", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeBSimple"] = new Regex(@"\b([B])\b[\s\S]{0,200}(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*6", RegexOptions.IgnoreCase | RegexOptions.Multiline),
+            ["InvoiceTypeESimple"] = new Regex(@"\b([E])\b[\s\S]{0,200}(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*0*19", RegexOptions.IgnoreCase | RegexOptions.Multiline),
             
-            // Patrones más flexibles para detectar A/B independientemente del código
+            // Patrones más flexibles para detectar A/B/E independientemente del código
             ["LetterAAlone"] = new Regex(@"(?:^|\s|\n|GRUPO\s+|FACTURA\s*)([A])(?:\s|\n|$|\s+FACTURA)", RegexOptions.Multiline),
             ["LetterBAlone"] = new Regex(@"(?:^|\s|\n|GRUPO\s+|FACTURA\s*)([B])(?:\s|\n|$|\s+FACTURA)", RegexOptions.Multiline),
-            ["Code001"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*(0*1)\b", RegexOptions.IgnoreCase),
-            ["Code006"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°º""\*]?|no\.?|number)\s*(0*6)\b", RegexOptions.IgnoreCase),
+            ["LetterEAlone"] = new Regex(@"(?:^|\s|\n|GRUPO\s+|FACTURA\s*)([E])(?:\s|\n|$|\s+FACTURA)", RegexOptions.Multiline),
+            ["Code001"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*(0*1)\b", RegexOptions.IgnoreCase),
+            ["Code006"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*(0*6)\b", RegexOptions.IgnoreCase),
+            ["Code019"] = new Regex(@"(?:codigo|código|cod\.?|code)\s*(?:n[°""*]?|no\.?|number)\s*(0*19)\b", RegexOptions.IgnoreCase),
             
             // Fechas en diferentes formatos
             ["DateDDMMYYYY"] = new Regex(@"\b(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4})\b"),
@@ -323,7 +346,7 @@ namespace OCR_test.Services.Implementations
         }
 
         /// <summary>
-        /// Detecta específicamente el tipo de factura argentina (A o B) con sus códigos
+        /// Detecta específicamente el tipo de factura argentina (A, B o E) con sus códigos
         /// </summary>
         private ExtractedCodeDto? DetectArgentineInvoiceType(string text)
         {
@@ -333,7 +356,7 @@ namespace OCR_test.Services.Implementations
 
             // *** ESTRATEGIAS ESPECÍFICAS PARA EL FORMATO DETECTADO ***
             
-            // Estrategia 1: Buscar "GRUPO A FACTURA" + "CODIGO N" 001"
+            // Estrategia 1: Buscar "GRUPO A/B/E FACTURA" + "CODIGO N° 001/006/019"
             var matchA_Grupo = _patterns["InvoiceTypeAGrupo"].Match(text);
             if (matchA_Grupo.Success)
             {
@@ -360,7 +383,20 @@ namespace OCR_test.Services.Implementations
                 };
             }
 
-            // Estrategia 2: Buscar "A FACTURA" + "CODIGO N" 001"
+            var matchE_Grupo = _patterns["InvoiceTypeEGrupo"].Match(text);
+            if (matchE_Grupo.Success)
+            {
+                _logger.LogInformation("? Detectado tipo E con patrón GRUPO E: {Match}", matchE_Grupo.Value);
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "InvoiceTypeEGrupo",
+                    Confidence = 0.98f
+                };
+            }
+
+            // Estrategia 2: Buscar "A/B/E FACTURA" + "CODIGO N° 001/006/019"
             var matchA_Factura = _patterns["InvoiceTypeAFactura"].Match(text);
             if (matchA_Factura.Success)
             {
@@ -387,7 +423,20 @@ namespace OCR_test.Services.Implementations
                 };
             }
 
-            // Estrategia 3: Patrones simplificados (solo A/B + código en un rango amplio)
+            var matchE_Factura = _patterns["InvoiceTypeEFactura"].Match(text);
+            if (matchE_Factura.Success)
+            {
+                _logger.LogInformation("? Detectado tipo E con patrón E FACTURA: {Match}", matchE_Factura.Value);
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "InvoiceTypeEFactura",
+                    Confidence = 0.96f
+                };
+            }
+
+            // Estrategia 3: Patrones simplificados (solo A/B/E + código en un rango amplio)
             var matchA_Simple = _patterns["InvoiceTypeASimple"].Match(text);
             if (matchA_Simple.Success)
             {
@@ -414,7 +463,20 @@ namespace OCR_test.Services.Implementations
                 };
             }
 
-            // Estrategia 4: Buscar patrones directos A + 001 o B + 006
+            var matchE_Simple = _patterns["InvoiceTypeESimple"].Match(text);
+            if (matchE_Simple.Success)
+            {
+                _logger.LogInformation("? Detectado tipo E con patrón simple: {Match}", matchE_Simple.Value);
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "InvoiceTypeESimple",
+                    Confidence = 0.92f
+                };
+            }
+
+            // Estrategia 4: Buscar patrones directos A/B/E + 001/006/019
             var matchA1 = _patterns["InvoiceTypeA"].Match(text);
             if (matchA1.Success)
             {
@@ -441,7 +503,20 @@ namespace OCR_test.Services.Implementations
                 };
             }
 
-            // Estrategia 5: Buscar A seguido de código 001 en líneas separadas
+            var matchE1 = _patterns["InvoiceTypeE"].Match(text);
+            if (matchE1.Success)
+            {
+                _logger.LogInformation("? Detectado tipo E con patrón directo: {Match}", matchE1.Value);
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "InvoiceTypeE",
+                    Confidence = 0.95f
+                };
+            }
+
+            // Estrategia 5: Buscar A/B/E seguido de código 001/006/019 en líneas separadas
             var matchA2 = _patterns["InvoiceTypeALetter"].Match(text);
             if (matchA2.Success)
             {
@@ -455,7 +530,6 @@ namespace OCR_test.Services.Implementations
                 };
             }
 
-            // Estrategia 6: Buscar B seguido de código 006 en líneas separadas
             var matchB2 = _patterns["InvoiceTypeBLetter"].Match(text);
             if (matchB2.Success)
             {
@@ -469,7 +543,20 @@ namespace OCR_test.Services.Implementations
                 };
             }
 
-            // Estrategia 7: Patrones flexibles con saltos de línea y espacios variables
+            var matchE2 = _patterns["InvoiceTypeELetter"].Match(text);
+            if (matchE2.Success)
+            {
+                _logger.LogInformation("? Detectado tipo E con letra y código en líneas separadas: {Match}", matchE2.Value);
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "InvoiceTypeELetter",
+                    Confidence = 0.9f
+                };
+            }
+
+            // Estrategia 6: Patrones flexibles con saltos de línea y espacios variables
             var matchA3 = _patterns["InvoiceTypeAFlexible"].Match(text);
             if (matchA3.Success)
             {
@@ -496,7 +583,20 @@ namespace OCR_test.Services.Implementations
                 };
             }
 
-            // Estrategia 8: Detección por proximidad (A cerca de 001, B cerca de 006)
+            var matchE3 = _patterns["InvoiceTypeEFlexible"].Match(text);
+            if (matchE3.Success)
+            {
+                _logger.LogInformation("? Detectado tipo E con patrón flexible: {Match}", matchE3.Value);
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "InvoiceTypeEFlexible",
+                    Confidence = 0.88f
+                };
+            }
+
+            // Estrategia 7: Detección por proximidad (A cerca de 001, B cerca de 006, E cerca de 019)
             var matchA5 = _patterns["InvoiceTypeAProximity"].Match(text);
             if (matchA5.Success)
             {
@@ -523,14 +623,29 @@ namespace OCR_test.Services.Implementations
                 };
             }
 
-            // Estrategia 9: Buscar correlación entre letras A/B y códigos 001/006 (fallback)
+            var matchE5 = _patterns["InvoiceTypeEProximity"].Match(text);
+            if (matchE5.Success)
+            {
+                _logger.LogInformation("? Detectado tipo E por proximidad: {Match}", matchE5.Value);
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "InvoiceTypeEProximity",
+                    Confidence = 0.82f
+                };
+            }
+
+            // Estrategia 8: Buscar correlación entre letras A/B/E y códigos 001/006/019 (fallback)
             var lettersA = _patterns["LetterAAlone"].Matches(text);
             var lettersB = _patterns["LetterBAlone"].Matches(text);
+            var lettersE = _patterns["LetterEAlone"].Matches(text);
             var codes001 = _patterns["Code001"].Matches(text);
             var codes006 = _patterns["Code006"].Matches(text);
+            var codes019 = _patterns["Code019"].Matches(text);
 
-            _logger.LogInformation("?? Correlación encontrada - Letras A: {LettersA}, Letras B: {LettersB}, Códigos 001: {Codes001}, Códigos 006: {Codes006}", 
-                lettersA.Count, lettersB.Count, codes001.Count, codes006.Count);
+            _logger.LogInformation("?? Correlación encontrada - Letras A: {LettersA}, Letras B: {LettersB}, Letras E: {LettersE}, Códigos 001: {Codes001}, Códigos 006: {Codes006}, Códigos 019: {Codes019}", 
+                lettersA.Count, lettersB.Count, lettersE.Count, codes001.Count, codes006.Count, codes019.Count);
 
             if (lettersA.Count > 0 && codes001.Count > 0)
             {
@@ -554,6 +669,19 @@ namespace OCR_test.Services.Implementations
                     Type = "InvoiceTypeB",
                     Value = "B",
                     Pattern = "CorrelationB006",
+                    Confidence = 0.75f
+                };
+            }
+
+            if (lettersE.Count > 0 && codes019.Count > 0)
+            {
+                _logger.LogInformation("? Detectado tipo E por correlación: {LettersE} letras E, {Codes019} códigos 019", 
+                    lettersE.Count, codes019.Count);
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "CorrelationE019",
                     Confidence = 0.75f
                 };
             }
@@ -730,7 +858,8 @@ namespace OCR_test.Services.Implementations
             // Obtener tipo de factura argentina si se detectó
             var invoiceTypeA = invoiceData.Codes.FirstOrDefault(c => c.Type == "InvoiceTypeA");
             var invoiceTypeB = invoiceData.Codes.FirstOrDefault(c => c.Type == "InvoiceTypeB");
-            var invoiceType = invoiceTypeA ?? invoiceTypeB;
+            var invoiceTypeE = invoiceData.Codes.FirstOrDefault(c => c.Type == "InvoiceTypeE");
+            var invoiceType = invoiceTypeA ?? invoiceTypeB ?? invoiceTypeE;
             
             // Crear encabezado básico con la información encontrada
             invoiceData.Header = new InvoiceHeaderDto
@@ -744,8 +873,14 @@ namespace OCR_test.Services.Implementations
             // *** CONFIGURAR INFORMACIÓN ESPECÍFICA DE FACTURA ARGENTINA ***
             if (invoiceType != null)
             {
-                invoiceData.Header.ArgentineInvoiceType = invoiceType.Value; // "A" o "B"
-                invoiceData.Header.ArgentineInvoiceCode = invoiceType.Type == "InvoiceTypeA" ? "001" : "006";
+                invoiceData.Header.ArgentineInvoiceType = invoiceType.Value; // "A", "B" o "E"
+                invoiceData.Header.ArgentineInvoiceCode = invoiceType.Type switch
+                {
+                    "InvoiceTypeA" => "001",
+                    "InvoiceTypeB" => "006",
+                    "InvoiceTypeE" => "019",
+                    _ => "000"
+                };
                 invoiceData.Header.Currency = "ARS";
                 invoiceData.Header.Confidence = Math.Max(invoiceData.Header.Confidence, invoiceType.Confidence);
                 invoiceData.Header.RequiresManualUpdate = false; // Se detectó correctamente
@@ -791,8 +926,8 @@ namespace OCR_test.Services.Implementations
             // *** ADVERTENCIAS ESPECÍFICAS PARA FACTURAS ARGENTINAS ***
             if (invoiceType == null)
             {
-                warnings.Add("?? CRÍTICO: No se detectó el tipo de factura argentina (A o B). REQUERE ACTUALIZACIÓN MANUAL en DocuWare.");
-                warnings.Add("?? Buscar visualmente: letra grande 'A' o 'B' con código '001' o '006' respectivamente.");
+                warnings.Add("?? CRÍTICO: No se detectó el tipo de factura argentina (A, B o E). REQUIERE ACTUALIZACIÓN MANUAL en DocuWare.");
+                warnings.Add("?? Buscar visualmente: letra grande 'A', 'B' o 'E' con código '001', '006' o '019' respectivamente.");
             }
 
             if (invoiceData.Header?.InvoiceNumber == null)
@@ -943,7 +1078,7 @@ namespace OCR_test.Services.Implementations
                 var warnings = new List<string>();
                 var confidenceScores = new List<float>();
 
-                // 1. DETECTAR TIPO DE FACTURA (A o B) Y CÓDIGO (001 o 006)
+                // 1. DETECTAR TIPO DE FACTURA (A, B o E) Y CÓDIGO (001, 006 o 019)
                 var detectionResult = DetectArgentineInvoiceTypeAndCodeSimplified(extractedText);
                 if (detectionResult.tipoDetectado != null || detectionResult.codigoDetectado != null)
                 {
@@ -951,14 +1086,26 @@ namespace OCR_test.Services.Implementations
                     if (detectionResult.tipoDetectado != null && detectionResult.codigoDetectado == null)
                     {
                         // Se detectó letra, inferir código
-                        detectionResult.codigoDetectado = detectionResult.tipoDetectado == "A" ? "001" : "006";
+                        detectionResult.codigoDetectado = detectionResult.tipoDetectado switch
+                        {
+                            "A" => "001",
+                            "B" => "006",
+                            "E" => "019",
+                            _ => null
+                        };
                         _logger.LogInformation("? Auto-completado: Tipo {Tipo} ? Código {Codigo}", 
                             detectionResult.tipoDetectado, detectionResult.codigoDetectado);
                     }
                     else if (detectionResult.codigoDetectado != null && detectionResult.tipoDetectado == null)
                     {
                         // Se detectó código, inferir letra
-                        detectionResult.tipoDetectado = detectionResult.codigoDetectado == "001" ? "A" : "B";
+                        detectionResult.tipoDetectado = detectionResult.codigoDetectado switch
+                        {
+                            "001" => "A",
+                            "006" => "B", 
+                            "019" => "E",
+                            _ => null
+                        };
                         _logger.LogInformation("? Auto-completado: Código {Codigo} ? Tipo {Tipo}", 
                             detectionResult.codigoDetectado, detectionResult.tipoDetectado);
                     }
@@ -972,7 +1119,7 @@ namespace OCR_test.Services.Implementations
                 }
                 else
                 {
-                    warnings.Add("No se pudo detectar el tipo de factura (A o B) ni el código (001 o 006)");
+                    warnings.Add("No se pudo detectar el tipo de factura (A, B o E) ni el código (001, 006 o 019)");
                     data.RequiereActualizacionManual = true;
                 }
 
@@ -1055,10 +1202,13 @@ namespace OCR_test.Services.Implementations
             {
                 ("InvoiceTypeAGrupo", _patterns["InvoiceTypeAGrupo"], 0.98f, "A", "001"),
                 ("InvoiceTypeBGrupo", _patterns["InvoiceTypeBGrupo"], 0.98f, "B", "006"),
+                ("InvoiceTypeEGrupo", _patterns["InvoiceTypeEGrupo"], 0.98f, "E", "019"),
                 ("InvoiceTypeAFactura", _patterns["InvoiceTypeAFactura"], 0.96f, "A", "001"),
                 ("InvoiceTypeBFactura", _patterns["InvoiceTypeBFactura"], 0.96f, "B", "006"),
+                ("InvoiceTypeEFactura", _patterns["InvoiceTypeEFactura"], 0.96f, "E", "019"),
                 ("InvoiceTypeASimple", _patterns["InvoiceTypeASimple"], 0.92f, "A", "001"),
-                ("InvoiceTypeBSimple", _patterns["InvoiceTypeBSimple"], 0.92f, "B", "006")
+                ("InvoiceTypeBSimple", _patterns["InvoiceTypeBSimple"], 0.92f, "B", "006"),
+                ("InvoiceTypeESimple", _patterns["InvoiceTypeESimple"], 0.92f, "E", "019")
             };
 
             foreach (var (patternName, pattern, confidence, tipo, codigo) in strategies)
@@ -1068,7 +1218,7 @@ namespace OCR_test.Services.Implementations
                 {
                     return new ExtractedCodeDto
                     {
-                        Type = tipo == "A" ? "InvoiceTypeA" : "InvoiceTypeB",
+                        Type = tipo == "A" ? "InvoiceTypeA" : tipo == "B" ? "InvoiceTypeB" : "InvoiceTypeE",
                         Value = tipo,
                         Pattern = patternName,
                         Confidence = confidence
@@ -1079,8 +1229,10 @@ namespace OCR_test.Services.Implementations
             // Fallback: correlación
             var lettersA = _patterns["LetterAAlone"].Matches(text);
             var lettersB = _patterns["LetterBAlone"].Matches(text);
+            var lettersE = _patterns["LetterEAlone"].Matches(text);
             var codes001 = _patterns["Code001"].Matches(text);
             var codes006 = _patterns["Code006"].Matches(text);
+            var codes019 = _patterns["Code019"].Matches(text);
 
             if (lettersA.Count > 0 && codes001.Count > 0)
             {
@@ -1103,6 +1255,17 @@ namespace OCR_test.Services.Implementations
                     Confidence = 0.75f
                 };
             }
+            
+            if (lettersE.Count > 0 && codes019.Count > 0)
+            {
+                return new ExtractedCodeDto
+                {
+                    Type = "InvoiceTypeE",
+                    Value = "E",
+                    Pattern = "CorrelationE019",
+                    Confidence = 0.75f
+                };
+            }
 
             return null;
         }
@@ -1115,15 +1278,18 @@ namespace OCR_test.Services.Implementations
             string? codigoDetectado = null;
             float maxConfidence = 0f;
 
-            // Estrategia 1: Detectar tipo (A/B) con patrones existentes
+            // Estrategia 1: Detectar tipo (A/B/E) con patrones existentes
             var strategies = new[]
             {
                 ("InvoiceTypeAGrupo", _patterns["InvoiceTypeAGrupo"], 0.98f, "A", "001"),
                 ("InvoiceTypeBGrupo", _patterns["InvoiceTypeBGrupo"], 0.98f, "B", "006"),
+                ("InvoiceTypeEGrupo", _patterns["InvoiceTypeEGrupo"], 0.98f, "E", "019"),
                 ("InvoiceTypeAFactura", _patterns["InvoiceTypeAFactura"], 0.96f, "A", "001"),
                 ("InvoiceTypeBFactura", _patterns["InvoiceTypeBFactura"], 0.96f, "B", "006"),
+                ("InvoiceTypeEFactura", _patterns["InvoiceTypeEFactura"], 0.96f, "E", "019"),
                 ("InvoiceTypeASimple", _patterns["InvoiceTypeASimple"], 0.92f, "A", "001"),
-                ("InvoiceTypeBSimple", _patterns["InvoiceTypeBSimple"], 0.92f, "B", "006")
+                ("InvoiceTypeBSimple", _patterns["InvoiceTypeBSimple"], 0.92f, "B", "006"),
+                ("InvoiceTypeESimple", _patterns["InvoiceTypeESimple"], 0.92f, "E", "019")
             };
 
             foreach (var (patternName, pattern, confidence, tipo, codigo) in strategies)
@@ -1140,40 +1306,54 @@ namespace OCR_test.Services.Implementations
                 }
             }
 
-            // Estrategia 2: Detectar solo códigos 001/006 si no se detectó el tipo
+            // Estrategia 2: Detectar solo códigos 001/006/019 si no se detectó el tipo
             var codes001 = _patterns["Code001"].Matches(text);
             var codes006 = _patterns["Code006"].Matches(text);
+            var codes019 = _patterns["Code019"].Matches(text);
 
-            if (codes001.Count > 0 && codes006.Count == 0)
+            if (codes001.Count > 0 && codes006.Count == 0 && codes019.Count == 0)
             {
                 codigoDetectado = "001";
                 maxConfidence = 0.85f;
                 _logger.LogInformation("? Detectado solo código 001 (sin letra A explícita)");
             }
-            else if (codes006.Count > 0 && codes001.Count == 0)
+            else if (codes006.Count > 0 && codes001.Count == 0 && codes019.Count == 0)
             {
                 codigoDetectado = "006";
                 maxConfidence = 0.85f;
                 _logger.LogInformation("? Detectado solo código 006 (sin letra B explícita)");
             }
+            else if (codes019.Count > 0 && codes001.Count == 0 && codes006.Count == 0)
+            {
+                codigoDetectado = "019";
+                maxConfidence = 0.85f;
+                _logger.LogInformation("? Detectado solo código 019 (sin letra E explícita)");
+            }
 
-            // Estrategia 3: Detectar solo letras A/B si no se detectó el código
+            // Estrategia 3: Detectar solo letras A/B/E si no se detectó el código
             if (tipoDetectado == null && codigoDetectado == null)
             {
                 var lettersA = _patterns["LetterAAlone"].Matches(text);
                 var lettersB = _patterns["LetterBAlone"].Matches(text);
+                var lettersE = _patterns["LetterEAlone"].Matches(text);
 
-                if (lettersA.Count > 0 && lettersB.Count == 0)
+                if (lettersA.Count > 0 && lettersB.Count == 0 && lettersE.Count == 0)
                 {
                     tipoDetectado = "A";
                     maxConfidence = 0.75f;
                     _logger.LogInformation("? Detectado solo letra A (sin código 001 explícito)");
                 }
-                else if (lettersB.Count > 0 && lettersA.Count == 0)
+                else if (lettersB.Count > 0 && lettersA.Count == 0 && lettersE.Count == 0)
                 {
                     tipoDetectado = "B";
                     maxConfidence = 0.75f;
                     _logger.LogInformation("? Detectado solo letra B (sin código 006 explícito)");
+                }
+                else if (lettersE.Count > 0 && lettersA.Count == 0 && lettersB.Count == 0)
+                {
+                    tipoDetectado = "E";
+                    maxConfidence = 0.75f;
+                    _logger.LogInformation("? Detectado solo letra E (sin código 019 explícito)");
                 }
 
                 // Estrategia 4: Correlación entre letras y códigos
@@ -1190,6 +1370,13 @@ namespace OCR_test.Services.Implementations
                     codigoDetectado = "006";
                     maxConfidence = 0.8f;
                     _logger.LogInformation("? Detectado por correlación: B + 006");
+                }
+                else if (tipoDetectado == null && lettersE.Count > 0 && codes019.Count > 0)
+                {
+                    tipoDetectado = "E";
+                    codigoDetectado = "019";
+                    maxConfidence = 0.8f;
+                    _logger.LogInformation("? Detectado por correlación: E + 019");
                 }
             }
 
