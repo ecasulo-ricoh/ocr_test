@@ -59,17 +59,20 @@ namespace OCR_test.Controllers
                 }
 
                 var mode = request.DryRun ? "DRY-RUN (simulación)" : "ACTUALIZACIÓN REAL";
+                var updateMode = request.OnlyUpdateEmptyFields ? "SOLO CAMPOS VACÍOS" : "SOBRESCRIBIR TODOS";
                 var fileCabinetId = _configService.GetFileCabinetId(); // Siempre usar el del appsettings
                 var language = "spa+eng"; // Idioma por defecto
 
-                _logger.LogInformation("?? Iniciando actualización masiva: {Count} documentos en modo {Mode}, FileCabinet: {FileCabinetId}, Idioma: {Language}",
-                    request.DocumentCount, mode, fileCabinetId, language);
+                _logger.LogInformation("?? Iniciando actualización masiva: {Count} documentos en modo {Mode}, " +
+                    "Actualización: {UpdateMode}, FileCabinet: {FileCabinetId}, Idioma: {Language}",
+                    request.DocumentCount, mode, updateMode, fileCabinetId, language);
 
                 // Crear request interno con valores por defecto
                 var internalRequest = new BulkUpdateInternalRequestDto
                 {
                     DocumentCount = request.DocumentCount,
                     DryRun = request.DryRun,
+                    OnlyUpdateEmptyFields = request.OnlyUpdateEmptyFields,
                     FileCabinetId = fileCabinetId,
                     Language = language
                 };
@@ -85,16 +88,17 @@ namespace OCR_test.Controllers
                     summary = new
                     {
                         totalProcessed = result.TotalProcessed,
-                        successfulUpdates = result.SuccessfulUpdates,
-                        failedUpdates = result.FailedUpdates,
-                        skippedDocuments = result.SkippedDocuments,
-                        successRate = result.TotalProcessed > 0 
+                        documentsModified = result.SuccessfulUpdates,  // Cambiar nombre para mayor claridad
+                        documentsWithErrors = result.FailedUpdates,
+                        documentsWithoutChanges = result.SkippedDocuments,
+                        modificationRate = result.TotalProcessed > 0   // Cambiar de successRate a modificationRate
                             ? Math.Round((double)result.SuccessfulUpdates / result.TotalProcessed * 100, 2) 
                             : 0
                     },
                     metadata = new
                     {
                         mode = request.DryRun ? "DRY-RUN" : "REAL",
+                        updateStrategy = request.OnlyUpdateEmptyFields ? "EMPTY_ONLY" : "OVERWRITE_ALL",
                         fileCabinetId = result.Metadata.FileCabinetId,
                         language = result.Metadata.Language,
                         startTime = result.Metadata.StartTime,
@@ -130,6 +134,8 @@ namespace OCR_test.Controllers
                             DATE = d.UpdatedFields.DATE,
                             CUIT_CLIENTE = d.UpdatedFields.CUIT_CLIENTE
                         },
+                        skippedFields = d.SkippedFields,
+                        validationWarnings = d.ValidationWarnings,
                         errors = d.Errors
                     }).ToList(),
                     errors = result.Errors,
@@ -140,13 +146,17 @@ namespace OCR_test.Controllers
 
                 // Log de resumen final
                 _logger.LogInformation("?? Actualización masiva finalizada. " +
-                    "Exitosos: {Success}/{Total} ({SuccessRate}%), " +
+                    "Modificados: {Modified}/{Total} ({ModificationRate}%), " +
+                    "Errores: {Errors}, Sin cambios: {NoChanges}, " +
                     "Tiempo total: {TotalMs}ms, " +
-                    "Velocidad: {DocsPerSec} docs/seg",
+                    "Velocidad: {DocsPerSec} docs/seg, " +
+                    "Modo: {UpdateMode}",
                     result.SuccessfulUpdates, result.TotalProcessed,
                     Math.Round((double)result.SuccessfulUpdates / Math.Max(result.TotalProcessed, 1) * 100, 1),
+                    result.FailedUpdates, result.SkippedDocuments,
                     result.Metadata.TotalProcessingTimeMs,
-                    Math.Round(result.Metadata.Performance.DocumentsPerSecond, 1));
+                    Math.Round(result.Metadata.Performance.DocumentsPerSecond, 1),
+                    updateMode);
 
                 return StatusCode(statusCode, response);
             }

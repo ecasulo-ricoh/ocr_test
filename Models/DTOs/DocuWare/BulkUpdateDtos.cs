@@ -14,6 +14,12 @@ namespace OCR_test.Models.DTOs.DocuWare
         /// Modo dry-run: si es true, solo simula los cambios sin aplicarlos
         /// </summary>
         public bool DryRun { get; set; } = true;
+
+        /// <summary>
+        /// Si es true, solo actualiza campos que estén vacíos en DocuWare (por defecto: true)
+        /// Si es false, sobrescribe todos los campos detectados por OCR
+        /// </summary>
+        public bool OnlyUpdateEmptyFields { get; set; } = true;
     }
 
     /// <summary>
@@ -30,6 +36,11 @@ namespace OCR_test.Models.DTOs.DocuWare
         /// Modo dry-run: si es true, solo simula los cambios sin aplicarlos
         /// </summary>
         public bool DryRun { get; set; } = true;
+
+        /// <summary>
+        /// Si es true, solo actualiza campos que estén vacíos en DocuWare
+        /// </summary>
+        public bool OnlyUpdateEmptyFields { get; set; } = true;
 
         /// <summary>
         /// FileCabinet ID específico
@@ -106,6 +117,16 @@ namespace OCR_test.Models.DTOs.DocuWare
         public DocumentUpdateFieldsDto? UpdatedFields { get; set; }
         
         /// <summary>
+        /// Campos que se omitieron por validación
+        /// </summary>
+        public List<string> SkippedFields { get; set; } = new();
+        
+        /// <summary>
+        /// Advertencias de validación
+        /// </summary>
+        public List<string> ValidationWarnings { get; set; } = new();
+        
+        /// <summary>
         /// Tiempo de procesamiento en milisegundos
         /// </summary>
         public long ProcessingTimeMs { get; set; }
@@ -153,6 +174,7 @@ namespace OCR_test.Models.DTOs.DocuWare
         public long TotalProcessingTimeMs { get; set; }
         public string FileCabinetId { get; set; } = "";
         public bool DryRunMode { get; set; }
+        public bool OnlyUpdateEmptyFields { get; set; }
         public int RequestedDocumentCount { get; set; }
         public string Language { get; set; } = "spa+eng"; // Valor por defecto
         

@@ -1,5 +1,6 @@
 using DocuWare.Platform.ServerClient;
 using OCR_test.Models.DTOs.DocuWare;
+using OCR_test.Models.DTOs.Invoice;
 using OCR_test.Services.Interfaces;
 using System.Diagnostics;
 
@@ -36,6 +37,7 @@ namespace OCR_test.Services.Implementations
                 {
                     StartTime = DateTime.UtcNow,
                     DryRunMode = request.DryRun,
+                    OnlyUpdateEmptyFields = request.OnlyUpdateEmptyFields,
                     RequestedDocumentCount = request.DocumentCount,
                     Language = request.Language,
                     FileCabinetId = request.FileCabinetId
@@ -45,8 +47,10 @@ namespace OCR_test.Services.Implementations
             try
             {
                 var mode = request.DryRun ? "DRY-RUN" : "ACTUALIZACIÓN REAL";
-                _logger.LogInformation("?? Iniciando actualización masiva en modo {Mode}. Documentos a procesar: {Count}", 
-                    mode, request.DocumentCount);
+                var updateStrategy = request.OnlyUpdateEmptyFields ? "SOLO CAMPOS VACÍOS" : "SOBRESCRIBIR TODOS";
+                
+                _logger.LogInformation("?? Iniciando actualización masiva en modo {Mode} con estrategia {Strategy}. Documentos a procesar: {Count}", 
+                    mode, updateStrategy, request.DocumentCount);
 
                 // Obtener lista de documentos
                 var documentIds = await GetDocumentListAsync(result.Metadata.FileCabinetId, request.DocumentCount);
@@ -94,7 +98,7 @@ namespace OCR_test.Services.Implementations
                             detail.Message = $"Error en OCR: {ocrResult.Message}";
                             detail.Errors.Add($"OCR falló: {ocrResult.Message}");
                             result.FailedUpdates++;
-                            result.Errors.Add($"Documento {documentId}: Error en OCR");
+                            result.Errors.Add($" Documento {documentId}: Error en OCR");
                         }
                         else
                         {
@@ -110,50 +114,50 @@ namespace OCR_test.Services.Implementations
                                 Confianza = ocrResult.Data.Confianza
                             };
 
-                            var updateFields = new DocumentUpdateFieldsDto
-                            {
-                                LETRA_DOCUMENTO = ocrResult.Data.TipoFactura,
-                                CODIGO_DOCUMENTO = ocrResult.Data.CodigoFactura,
-                                NDEG_FACTURA = ocrResult.Data.NroFactura,
-                                DATE = ocrResult.Data.FechaFactura,
-                                CUIT_CLIENTE = ocrResult.Data.CuitCliente
-                                // RAZON_SOCIAL intencionalmente omitido
-                            };
+                            // 3. Validar y preparar campos para actualización
+                            var validationResult = await ValidateAndPrepareFieldsAsync(
+                                documentId, ocrResult.Data, result.Metadata.FileCabinetId, request.OnlyUpdateEmptyFields);
+                            
+                            detail.UpdatedFields = validationResult.ValidatedFields;
+                            detail.SkippedFields = validationResult.SkippedFields;
+                            detail.ValidationWarnings = validationResult.ValidationWarnings;
 
-                            // 3. Verificar si hay campos para actualizar
-                            if (HasFieldsToUpdate(updateFields))
+                            // 4. Verificar si hay campos para actualizar
+                            if (HasFieldsToUpdate(validationResult.ValidatedFields))
                             {
                                 // 4. Actualizar documento en DocuWare
                                 var updateStopwatch = Stopwatch.StartNew();
                                 var updateResult = await UpdateDocumentFieldsAsync(
-                                    documentId, updateFields, result.Metadata.FileCabinetId, request.DryRun);
+                                    documentId, validationResult.ValidatedFields, result.Metadata.FileCabinetId, request.DryRun);
                                 updateStopwatch.Stop();
                                 updateTimes.Add(updateStopwatch.ElapsedMilliseconds);
 
                                 detail.Status = updateResult.Status;
                                 detail.Message = updateResult.Message;
-                                detail.UpdatedFields = updateFields;
                                 detail.Errors.AddRange(updateResult.Errors);
 
                                 if (updateResult.Status == "Success")
                                 {
                                     result.SuccessfulUpdates++;
+                                    _logger.LogInformation("? Documento {DocumentId} actualizado exitosamente", documentId);
                                 }
                                 else if (updateResult.Status == "Failed")
                                 {
                                     result.FailedUpdates++;
-                                    result.Errors.Add($"Documento {documentId}: Error en actualización");
+                                    result.Errors.Add($" Documento {documentId}: Error en actualización");
                                 }
                                 else
                                 {
                                     result.SkippedDocuments++;
+                                    _logger.LogInformation("??  Documento {DocumentId} omitido: {Message}", documentId, updateResult.Message);
                                 }
                             }
                             else
                             {
                                 detail.Status = "NoChanges";
-                                detail.Message = "No se encontraron campos válidos para actualizar";
+                                detail.Message = "No se encontraron campos válidos para actualizar después de validaciones";
                                 result.SkippedDocuments++;
+                                _logger.LogInformation("??  Documento {DocumentId} sin cambios: no hay campos para actualizar", documentId);
                             }
                         }
 
@@ -166,7 +170,7 @@ namespace OCR_test.Services.Implementations
                         if ((i + 1) % 10 == 0 || i == documentIds.Count - 1)
                         {
                             _logger.LogInformation("?? Progreso: {Current}/{Total} documentos procesados. " +
-                                "Exitosos: {Success}, Fallidos: {Failed}, Omitidos: {Skipped}",
+                                "Modificados: {Modified}, Errores: {Failed}, Sin cambios: {Skipped}",
                                 i + 1, documentIds.Count, result.SuccessfulUpdates, result.FailedUpdates, result.SkippedDocuments);
                         }
                     }
@@ -186,7 +190,7 @@ namespace OCR_test.Services.Implementations
 
                         result.FailedUpdates++;
                         result.TotalProcessed++;
-                        result.Errors.Add($"Documento {documentId}: Error inesperado");
+                        result.Errors.Add($" Documento {documentId}: Error inesperado");
                     }
                 }
 
@@ -205,9 +209,9 @@ namespace OCR_test.Services.Implementations
                 };
 
                 result.Success = true;
-                result.Message = $"Procesamiento completado en modo {mode}. " +
-                    $"Procesados: {result.TotalProcessed}, Exitosos: {result.SuccessfulUpdates}, " +
-                    $"Fallidos: {result.FailedUpdates}, Omitidos: {result.SkippedDocuments}";
+                result.Message = $"Procesamiento completado en modo {mode} con estrategia {updateStrategy}. " +
+                    $"Procesados: {result.TotalProcessed}, Modificados: {result.SuccessfulUpdates}, " +
+                    $"Errores: {result.FailedUpdates}, Sin cambios: {result.SkippedDocuments}";
 
                 _logger.LogInformation("? Actualización masiva completada en {ElapsedMs}ms. {Message}",
                     stopwatch.ElapsedMilliseconds, result.Message);
@@ -313,13 +317,26 @@ namespace OCR_test.Services.Implementations
 
             try
             {
+                // Contar campos válidos antes de procesar
+                var fieldsToUpdateCount = CountValidFields(fields);
+                
+                if (fieldsToUpdateCount == 0)
+                {
+                    result.Status = "NoChanges";
+                    result.Message = "No hay campos válidos para actualizar";
+                    stopwatch.Stop();
+                    result.ProcessingTimeMs = stopwatch.ElapsedMilliseconds;
+                    _logger.LogInformation("??  Documento {DocumentId}: No hay campos para actualizar", documentId);
+                    return result;
+                }
+
                 if (dryRun)
                 {
-                    _logger.LogInformation("?? DRY-RUN - Documento {DocumentId}: Campos a actualizar: {Fields}",
-                        documentId, SerializeFields(fields));
+                    _logger.LogInformation("?? DRY-RUN - Documento {DocumentId}: {Count} campos a actualizar: {Fields}",
+                        documentId, fieldsToUpdateCount, SerializeFields(fields));
 
                     result.Status = "Success";
-                    result.Message = "DRY-RUN: Actualización simulada exitosamente";
+                    result.Message = $"DRY-RUN: {fieldsToUpdateCount} campos serían actualizados";
                     stopwatch.Stop();
                     result.ProcessingTimeMs = stopwatch.ElapsedMilliseconds;
                     return result;
@@ -420,6 +437,22 @@ namespace OCR_test.Services.Implementations
             }
         }
 
+        /// <summary>
+        /// Cuenta el número de campos válidos (no vacíos) para actualizar
+        /// </summary>
+        private int CountValidFields(DocumentUpdateFieldsDto fields)
+        {
+            var count = 0;
+            
+            if (!string.IsNullOrEmpty(fields.LETRA_DOCUMENTO)) count++;
+            if (!string.IsNullOrEmpty(fields.CODIGO_DOCUMENTO)) count++;
+            if (!string.IsNullOrEmpty(fields.NDEG_FACTURA)) count++;
+            if (!string.IsNullOrEmpty(fields.DATE)) count++;
+            if (!string.IsNullOrEmpty(fields.CUIT_CLIENTE)) count++;
+            
+            return count;
+        }
+
         private bool HasFieldsToUpdate(DocumentUpdateFieldsDto fields)
         {
             return !string.IsNullOrEmpty(fields.LETRA_DOCUMENTO) ||
@@ -500,6 +533,282 @@ namespace OCR_test.Services.Implementations
 
             // Por ahora, devolver lista simulada
             throw new NotImplementedException("Implementación completa de DocuWare API pendiente");
+        }
+
+        /// <summary>
+        /// Resultado de validación de campos
+        /// </summary>
+        private class FieldValidationResult
+        {
+            public DocumentUpdateFieldsDto ValidatedFields { get; set; } = new();
+            public List<string> SkippedFields { get; set; } = new();
+            public List<string> ValidationWarnings { get; set; } = new();
+        }
+
+        /// <summary>
+        /// Valida y prepara los campos para actualización según las reglas de negocio
+        /// </summary>
+        private async Task<FieldValidationResult> ValidateAndPrepareFieldsAsync(
+            int documentId, 
+            OCR_test.Models.DTOs.Invoice.SimplifiedInvoiceDataDto ocrData, 
+            string fileCabinetId, 
+            bool onlyUpdateEmptyFields)
+        {
+            var result = new FieldValidationResult();
+            var validatedFields = new DocumentUpdateFieldsDto();
+
+            try
+            {
+                // Obtener campos actuales del documento si es necesario
+                Dictionary<string, string?> currentFields = new();
+                
+                if (onlyUpdateEmptyFields)
+                {
+                    currentFields = await GetCurrentDocumentFieldsAsync(documentId, fileCabinetId);
+                }
+
+                // Validar LETRA_DOCUMENTO
+                if (!string.IsNullOrEmpty(ocrData.TipoFactura))
+                {
+                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "LETRA_DOCUMENTO"))
+                    {
+                        if (IsValidInvoiceType(ocrData.TipoFactura))
+                        {
+                            validatedFields.LETRA_DOCUMENTO = ocrData.TipoFactura;
+                            _logger.LogInformation("? LETRA_DOCUMENTO validado: {Value} para documento {DocumentId}", 
+                                ocrData.TipoFactura, documentId);
+                        }
+                        else
+                        {
+                            result.SkippedFields.Add("LETRA_DOCUMENTO");
+                            result.ValidationWarnings.Add($"LETRA_DOCUMENTO inválido: '{ocrData.TipoFactura}' (solo se permiten A o B)");
+                            _logger.LogWarning("??  LETRA_DOCUMENTO inválido para documento {DocumentId}: {Value}", 
+                                documentId, ocrData.TipoFactura);
+                        }
+                    }
+                    else
+                    {
+                        result.SkippedFields.Add("LETRA_DOCUMENTO");
+                        result.ValidationWarnings.Add("LETRA_DOCUMENTO omitido: campo ya tiene valor y onlyUpdateEmptyFields=true");
+                        _logger.LogInformation("??  LETRA_DOCUMENTO omitido para documento {DocumentId}: campo ya tiene valor", documentId);
+                    }
+                }
+
+                // Validar CODIGO_DOCUMENTO
+                if (!string.IsNullOrEmpty(ocrData.CodigoFactura))
+                {
+                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "CODIGO_DOCUMENTO"))
+                    {
+                        if (IsValidInvoiceCode(ocrData.CodigoFactura))
+                        {
+                            validatedFields.CODIGO_DOCUMENTO = ocrData.CodigoFactura;
+                            _logger.LogInformation("? CODIGO_DOCUMENTO validado: {Value} para documento {DocumentId}", 
+                                ocrData.CodigoFactura, documentId);
+                        }
+                        else
+                        {
+                            result.SkippedFields.Add("CODIGO_DOCUMENTO");
+                            result.ValidationWarnings.Add($"CODIGO_DOCUMENTO inválido: '{ocrData.CodigoFactura}' (solo se permiten 001 o 006)");
+                            _logger.LogWarning("??  CODIGO_DOCUMENTO inválido para documento {DocumentId}: {Value}", 
+                                documentId, ocrData.CodigoFactura);
+                        }
+                    }
+                    else
+                    {
+                        result.SkippedFields.Add("CODIGO_DOCUMENTO");
+                        result.ValidationWarnings.Add("CODIGO_DOCUMENTO omitido: campo ya tiene valor y onlyUpdateEmptyFields=true");
+                    }
+                }
+
+                // Validar NDEG_FACTURA (con formato específico)
+                if (!string.IsNullOrEmpty(ocrData.NroFactura))
+                {
+                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "NDEG_FACTURA"))
+                    {
+                        if (IsValidInvoiceNumber(ocrData.NroFactura))
+                        {
+                            validatedFields.NDEG_FACTURA = ocrData.NroFactura;
+                            _logger.LogInformation("? NDEG_FACTURA validado: {Value} para documento {DocumentId}", 
+                                ocrData.NroFactura, documentId);
+                        }
+                        else
+                        {
+                            result.SkippedFields.Add("NDEG_FACTURA");
+                            result.ValidationWarnings.Add($"NDEG_FACTURA formato inválido: '{ocrData.NroFactura}' (formato esperado: 00000-00000000)");
+                            _logger.LogWarning("??  NDEG_FACTURA formato inválido para documento {DocumentId}: {Value} - Revisar manualmente", 
+                                documentId, ocrData.NroFactura);
+                        }
+                    }
+                    else
+                    {
+                        result.SkippedFields.Add("NDEG_FACTURA");
+                        result.ValidationWarnings.Add("NDEG_FACTURA omitido: campo ya tiene valor y onlyUpdateEmptyFields=true");
+                    }
+                }
+
+                // Validar DATE
+                if (!string.IsNullOrEmpty(ocrData.FechaFactura))
+                {
+                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "DATE"))
+                    {
+                        if (IsValidDate(ocrData.FechaFactura))
+                        {
+                            validatedFields.DATE = ocrData.FechaFactura;
+                            _logger.LogInformation("? DATE validado: {Value} para documento {DocumentId}", 
+                                ocrData.FechaFactura, documentId);
+                        }
+                        else
+                        {
+                            result.SkippedFields.Add("DATE");
+                            result.ValidationWarnings.Add($"DATE formato inválido: '{ocrData.FechaFactura}' (formato esperado: DD/MM/yyyy)");
+                            _logger.LogWarning("??  DATE formato inválido para documento {DocumentId}: {Value}", 
+                                documentId, ocrData.FechaFactura);
+                        }
+                    }
+                    else
+                    {
+                        result.SkippedFields.Add("DATE");
+                        result.ValidationWarnings.Add("DATE omitido: campo ya tiene valor y onlyUpdateEmptyFields=true");
+                    }
+                }
+
+                // Validar CUIT_CLIENTE
+                if (!string.IsNullOrEmpty(ocrData.CuitCliente))
+                {
+                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "CUIT_CLIENTE"))
+                    {
+                        if (IsValidCuit(ocrData.CuitCliente))
+                        {
+                            validatedFields.CUIT_CLIENTE = ocrData.CuitCliente;
+                            _logger.LogInformation("? CUIT_CLIENTE validado: {Value} para documento {DocumentId}", 
+                                ocrData.CuitCliente, documentId);
+                        }
+                        else
+                        {
+                            result.SkippedFields.Add("CUIT_CLIENTE");
+                            result.ValidationWarnings.Add($"CUIT_CLIENTE formato inválido: '{ocrData.CuitCliente}' (formato esperado: XX-XXXXXXXX-X)");
+                            _logger.LogWarning("??  CUIT_CLIENTE formato inválido para documento {DocumentId}: {Value}", 
+                                documentId, ocrData.CuitCliente);
+                        }
+                    }
+                    else
+                    {
+                        result.SkippedFields.Add("CUIT_CLIENTE");
+                        result.ValidationWarnings.Add("CUIT_CLIENTE omitido: campo ya tiene valor y onlyUpdateEmptyFields=true");
+                    }
+                }
+
+                result.ValidatedFields = validatedFields;
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error validando campos para documento {DocumentId}", documentId);
+                result.ValidationWarnings.Add($"Error en validación: {ex.Message}");
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// Obtiene los campos actuales del documento desde DocuWare
+        /// </summary>
+        private async Task<Dictionary<string, string?>> GetCurrentDocumentFieldsAsync(int documentId, string fileCabinetId)
+        {
+            var fields = new Dictionary<string, string?>();
+            
+            try
+            {
+                var connection = _connectionService.GetConnection();
+                var documentResponse = await connection.GetFromDocumentForDocumentAsync(documentId, fileCabinetId);
+                var document = documentResponse.Content.GetDocumentFromSelfRelation();
+
+                if (document.Fields != null)
+                {
+                    foreach (var field in document.Fields)
+                    {
+                        if (field.FieldName != null)
+                        {
+                            fields[field.FieldName] = field.Item?.ToString();
+                        }
+                    }
+                }
+
+                _logger.LogDebug("?? Campos actuales obtenidos para documento {DocumentId}: {FieldCount} campos", 
+                    documentId, fields.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "No se pudieron obtener campos actuales para documento {DocumentId}", documentId);
+            }
+
+            return fields;
+        }
+
+        /// <summary>
+        /// Verifica si un campo está vacío
+        /// </summary>
+        private bool IsFieldEmpty(Dictionary<string, string?> currentFields, string fieldName)
+        {
+            if (!currentFields.ContainsKey(fieldName))
+                return true;
+
+            var value = currentFields[fieldName];
+            return string.IsNullOrWhiteSpace(value);
+        }
+
+        /// <summary>
+        /// Valida el formato del número de factura: 00000-00000000
+        /// </summary>
+        private bool IsValidInvoiceNumber(string invoiceNumber)
+        {
+            if (string.IsNullOrWhiteSpace(invoiceNumber))
+                return false;
+
+            // Patrón: exactamente 5 dígitos, guión, exactamente 8 dígitos
+            var pattern = @"^\d{5}-\d{8}$";
+            return System.Text.RegularExpressions.Regex.IsMatch(invoiceNumber, pattern);
+        }
+
+        /// <summary>
+        /// Valida el tipo de factura (solo A o B)
+        /// </summary>
+        private bool IsValidInvoiceType(string invoiceType)
+        {
+            return invoiceType == "A" || invoiceType == "B";
+        }
+
+        /// <summary>
+        /// Valida el código de factura (solo 001 o 006)
+        /// </summary>
+        private bool IsValidInvoiceCode(string invoiceCode)
+        {
+            return invoiceCode == "001" || invoiceCode == "006";
+        }
+
+        /// <summary>
+        /// Valida el formato de fecha DD/MM/yyyy
+        /// </summary>
+        private bool IsValidDate(string dateString)
+        {
+            if (string.IsNullOrWhiteSpace(dateString))
+                return false;
+
+            return DateTime.TryParseExact(dateString, "dd/MM/yyyy", 
+                System.Globalization.CultureInfo.InvariantCulture, 
+                System.Globalization.DateTimeStyles.None, out _);
+        }
+
+        /// <summary>
+        /// Valida el formato de CUIT: XX-XXXXXXXX-X
+        /// </summary>
+        private bool IsValidCuit(string cuit)
+        {
+            if (string.IsNullOrWhiteSpace(cuit))
+                return false;
+
+            // Patrón: exactamente 2 dígitos, guión, 8 dígitos, guión, 1 dígito
+            var pattern = @"^\d{2}-\d{8}-\d{1}$";
+            return System.Text.RegularExpressions.Regex.IsMatch(cuit, pattern);
         }
     }
 }
