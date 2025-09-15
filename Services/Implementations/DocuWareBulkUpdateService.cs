@@ -110,7 +110,6 @@ namespace OCR_test.Services.Implementations
                                 NroFactura = ocrResult.Data.NroFactura,
                                 FechaFactura = ocrResult.Data.FechaFactura,
                                 CuitCliente = ocrResult.Data.CuitCliente,
-                                RazonSocialCliente = ocrResult.Data.RazonSocialCliente,
                                 Confianza = ocrResult.Data.Confianza
                             };
 

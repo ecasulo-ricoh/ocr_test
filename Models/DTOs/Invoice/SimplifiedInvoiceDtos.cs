@@ -49,14 +49,9 @@ namespace OCR_test.Models.DTOs.Invoice
         public string? FechaFactura { get; set; }
         
         /// <summary>
-        /// CUIT del cliente (no del vendedor)
+        /// CUIT del cliente (SIEMPRE el segundo CUIT que aparece en el documento)
         /// </summary>
         public string? CuitCliente { get; set; }
-        
-        /// <summary>
-        /// Razón social / nombre del cliente
-        /// </summary>
-        public string? RazonSocialCliente { get; set; }
         
         /// <summary>
         /// Indica si se requiere actualización manual en DocuWare

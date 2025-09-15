@@ -270,16 +270,15 @@ namespace OCR_test.Controllers
                     new { 
                         ocrField = "cuitCliente", 
                         docuWareField = "CUIT_CLIENTE", 
-                        description = "CUIT del cliente (no del vendedor)",
+                        description = "CUIT del cliente (SIEMPRE el segundo CUIT que aparece en el documento)",
                         example = "30-58584975-1"
                     }
                 },
                 excludedFields = new[]
                 {
                     new { 
-                        ocrField = "razonSocialCliente", 
-                        docuWareField = "RAZON_SOCIAL", 
-                        reason = "Excluido por requerimiento del usuario"
+                        field = "razonSocialCliente", 
+                        reason = "Campo eliminado - ya no se procesa ni actualiza"
                     }
                 },
                 notes = new[]

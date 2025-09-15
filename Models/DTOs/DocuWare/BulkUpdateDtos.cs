@@ -147,7 +147,6 @@ namespace OCR_test.Models.DTOs.DocuWare
         public string? NroFactura { get; set; }
         public string? FechaFactura { get; set; }
         public string? CuitCliente { get; set; }
-        public string? RazonSocialCliente { get; set; }
         public float Confianza { get; set; }
     }
 

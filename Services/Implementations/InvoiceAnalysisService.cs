@@ -1003,30 +1003,17 @@ namespace OCR_test.Services.Implementations
                     warnings.Add("No se pudo detectar la fecha de factura");
                 }
 
-                // 4. DETECTAR CUIT DEL CLIENTE (no del vendedor)
-                var cuitCliente = DetectClientCuit(extractedText);
+                // 4. DETECTAR CUIT DEL CLIENTE (SIEMPRE EL SEGUNDO)
+                var cuitCliente = DetectClientCuitSecond(extractedText);
                 if (cuitCliente != null)
                 {
                     data.CuitCliente = cuitCliente.Value;
                     confidenceScores.Add(cuitCliente.Confidence);
-                    _logger.LogInformation("? CUIT del cliente detectado: {Cuit}", cuitCliente.Value);
+                    _logger.LogInformation("? CUIT del cliente detectado (segundo): {Cuit}", cuitCliente.Value);
                 }
                 else
                 {
-                    warnings.Add("No se pudo detectar el CUIT del cliente");
-                }
-
-                // 5. DETECTAR RAZÓN SOCIAL DEL CLIENTE
-                var razonSocial = DetectClientName(extractedText);
-                if (razonSocial != null)
-                {
-                    data.RazonSocialCliente = razonSocial.Value;
-                    confidenceScores.Add(razonSocial.Confidence);
-                    _logger.LogInformation("? Razón social del cliente detectada: {RazonSocial}", razonSocial.Value);
-                }
-                else
-                {
-                    warnings.Add("No se pudo detectar la razón social del cliente");
+                    warnings.Add("No se pudo detectar el CUIT del cliente (segundo CUIT del documento)");
                 }
 
                 // Calcular confianza general
@@ -1037,14 +1024,13 @@ namespace OCR_test.Services.Implementations
                     data.CodigoFactura,
                     data.NroFactura, 
                     data.FechaFactura, 
-                    data.CuitCliente, 
-                    data.RazonSocialCliente 
+                    data.CuitCliente
                 }.Count(f => !string.IsNullOrEmpty(f));
 
                 return new SimplifiedInvoiceResultDto
                 {
                     Success = true,
-                    Message = $"Análisis simplificado completado. Campos detectados: {fieldsDetected}/6. Confianza: {data.Confianza:F2}",
+                    Message = $"Análisis simplificado completado. Campos detectados: {fieldsDetected}/5. Confianza: {data.Confianza:F2}",
                     Data = data,
                     Warnings = warnings
                 };
@@ -1278,67 +1264,55 @@ namespace OCR_test.Services.Implementations
             return null;
         }
 
-        private ExtractedCodeDto? DetectClientCuit(string text)
+        private ExtractedCodeDto? DetectClientCuitSecond(string text)
         {
-            // Buscar CUITs, pero tomar el segundo (cliente), no el primero (vendedor)
+            _logger.LogInformation("?? Buscando CUIT del cliente (segundo CUIT en el documento)...");
+            
+            // Buscar todos los CUITs en el documento usando el patrón estándar
             var cuitPattern = new Regex(@"\b(\d{2}-\d{8}-\d{1})\b");
             var matches = cuitPattern.Matches(text);
 
+            _logger.LogInformation("?? Total de CUITs encontrados en el documento: {Count}", matches.Count);
+            
+            // Loggear todos los CUITs encontrados para debugging
+            for (int i = 0; i < matches.Count; i++)
+            {
+                _logger.LogInformation("CUIT #{Index}: {Cuit}", i + 1, matches[i].Groups[1].Value);
+            }
+
             if (matches.Count >= 2)
             {
-                // Tomar el segundo CUIT (cliente)
+                // Tomar el segundo CUIT (índice 1)
+                var secondCuit = matches[1].Groups[1].Value;
+                _logger.LogInformation("? CUIT del cliente seleccionado (segundo): {Cuit}", secondCuit);
+                
                 return new ExtractedCodeDto
                 {
                     Type = "ClientCUIT",
-                    Value = matches[1].Groups[1].Value,
-                    Pattern = "CUIT",
+                    Value = secondCuit,
+                    Pattern = "CUIT_Second",
                     Confidence = 0.95f
                 };
             }
             else if (matches.Count == 1)
             {
-                // Si solo hay uno, asumir que es del cliente
+                // Si solo hay un CUIT, advertir pero tomarlo
+                var onlyCuit = matches[0].Groups[1].Value;
+                _logger.LogWarning("??  Solo se encontró un CUIT en el documento. Se asume que es del cliente: {Cuit}", onlyCuit);
+                
                 return new ExtractedCodeDto
                 {
                     Type = "ClientCUIT",
-                    Value = matches[0].Groups[1].Value,
-                    Pattern = "CUIT",
-                    Confidence = 0.8f
+                    Value = onlyCuit,
+                    Pattern = "CUIT_OnlyOne",
+                    Confidence = 0.7f // Menor confianza porque no estamos seguros
                 };
             }
-
-            return null;
-        }
-
-        private ExtractedCodeDto? DetectClientName(string text)
-        {
-            // Buscar razón social cerca de la sección SRES o DOMICILIO
-            var patterns = new[]
+            else
             {
-                new Regex(@"SRES\.?:\s*([A-Za-z0-9\s\.]{10,80})(?:\s+N[°º]|$|\n)", RegexOptions.IgnoreCase),
-                new Regex(@"(?:SRES|SEÑORES?)\.?:\s*([A-Za-z0-9\s\.]{10,80})", RegexOptions.IgnoreCase)
-            };
-
-            foreach (var pattern in patterns)
-            {
-                var match = pattern.Match(text);
-                if (match.Success)
-                {
-                    var clientName = match.Groups[1].Value.Trim();
-                    if (clientName.Length > 5) // Validar que no sea muy corto
-                    {
-                        return new ExtractedCodeDto
-                        {
-                            Type = "ClientName",
-                            Value = clientName,
-                            Pattern = "ClientName",
-                            Confidence = 0.85f
-                        };
-                    }
-                }
+                _logger.LogWarning("? No se encontraron CUITs en el documento");
+                return null;
             }
-
-            return null;
         }
     }
 }

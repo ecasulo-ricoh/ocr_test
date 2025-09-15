@@ -136,9 +136,11 @@ curl -X POST "http://localhost:5000/api/docuware/bulk-update" \
 | `codigoFactura` | `CODIGO_DOCUMENTO` | 001 o 006 | Código según tipo de factura |
 | `nroFactura` | `NDEG_FACTURA` | 00000-00000000 | Número de factura |
 | `fechaFactura` | `DATE` | DD/MM/yyyy | Fecha de emisión |
-| `cuitCliente` | `CUIT_CLIENTE` | XX-XXXXXXXX-X | CUIT del cliente |
+| `cuitCliente` | `CUIT_CLIENTE` | XX-XXXXXXXX-X | **SIEMPRE el segundo CUIT del documento** |
 
-**Nota**: `razonSocialCliente` se detecta pero **no se actualiza** en DocuWare por requerimiento del usuario.
+**Notas importantes**:
+- ? **CUIT del Cliente**: Se toma **SIEMPRE el segundo CUIT** que aparece en el documento (el primero es del vendedor)
+- ? **Razón Social**: Ya **no se procesa ni actualiza** por requerimiento del usuario
 
 ## ?? Respuesta JSON
 
