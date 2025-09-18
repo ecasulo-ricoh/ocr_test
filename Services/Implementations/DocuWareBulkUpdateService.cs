@@ -15,20 +15,48 @@ namespace OCR_test.Services.Implementations
         private readonly IDocuWareConfigurationService _configService;
         private readonly IInvoiceAnalysisService _invoiceAnalysisService;
         private readonly ICsvLoggingService _csvLoggingService;
+        private readonly IConfiguration _configuration;
         private readonly ILogger<DocuWareBulkUpdateService> _logger;
+
+        // Configuración para límites y valores vacíos
+        private readonly int _maxDocumentLimit;
+        private readonly List<string> _emptyFieldValues;
+        private readonly bool _treatEmptyValuesAsPlaceholders;
+        private readonly bool _logPlaceholderReplacements;
 
         public DocuWareBulkUpdateService(
             IDocuWareConnectionService connectionService,
             IDocuWareConfigurationService configService,
             IInvoiceAnalysisService invoiceAnalysisService,
             ICsvLoggingService csvLoggingService,
+            IConfiguration configuration,
             ILogger<DocuWareBulkUpdateService> logger)
         {
             _connectionService = connectionService;
             _configService = configService;
             _invoiceAnalysisService = invoiceAnalysisService;
             _csvLoggingService = csvLoggingService;
+            _configuration = configuration;
             _logger = logger;
+
+            // Cargar configuración de límites y valores vacíos
+            _maxDocumentLimit = _configuration.GetValue<int>("BulkUpdate:MaxDocumentLimit", 5000);
+            _emptyFieldValues = _configuration.GetSection("BulkUpdate:EmptyFieldValues")
+                .Get<List<string>>() ?? new List<string> { "--", "", "N/A", "NULL", "null", "undefined", " ", "  ", "   " };
+            
+            // ? NUEVAS CONFIGURACIONES PARA MANEJO DE PLACEHOLDERS
+            _treatEmptyValuesAsPlaceholders = _configuration.GetValue<bool>("BulkUpdate:TreatEmptyValuesAsPlaceholders", true);
+            _logPlaceholderReplacements = _configuration.GetValue<bool>("BulkUpdate:LogPlaceholderReplacements", true);
+
+            _logger.LogInformation("?? Configuración bulk update cargada: " +
+                "Límite máximo: {MaxLimit}, " +
+                "Valores vacíos/placeholder: [{EmptyValues}], " +
+                "Tratar como placeholders: {TreatAsPlaceholders}, " +
+                "Log reemplazos: {LogReplacements}", 
+                _maxDocumentLimit, 
+                string.Join(", ", _emptyFieldValues), 
+                _treatEmptyValuesAsPlaceholders,
+                _logPlaceholderReplacements);
         }
 
         /// <summary>
@@ -69,217 +97,45 @@ namespace OCR_test.Services.Implementations
                 ["ValidationIssues"] = 0,
                 ["OcrFailures"] = 0,
                 ["DocuWareFailures"] = 0,
-                ["TipoEDetected"] = 0  // Nueva estadística para tipo E
+                ["TipoEDetected"] = 0
             };
 
             try
             {
                 var mode = request.DryRun ? "DRY-RUN" : "ACTUALIZACIÓN REAL";
-                var updateStrategy = request.OnlyUpdateEmptyFields ? "SOLO CAMPOS VACÍOS" : "SOBRESCRIBIR TODOS";
+                var updateStrategy = request.OnlyUpdateEmptyFields ? "SOLO CAMPOS VACÍOS/PLACEHOLDER" : "SOBRESCRIBIR TODOS";
                 
-                _logger.LogInformation("?? Iniciando actualización masiva [{BatchId}] en modo {Mode} con estrategia {Strategy}. Documentos a procesar: {Count}", 
-                    batchId, mode, updateStrategy, request.DocumentCount);
-
-                // Obtener lista de documentos usando GetAllDocuments
-                var documentIds = await GetDocumentListAsync(result.Metadata.FileCabinetId, request.DocumentCount);
-                
-                if (!documentIds.Any())
+                // ? VALIDAR LÍMITE MÁXIMO DE DOCUMENTOS
+                if (request.DocumentCount > _maxDocumentLimit)
                 {
+                    var errorMessage = $"Límite excedido: Se solicitaron {request.DocumentCount} documentos, pero el máximo permitido es {_maxDocumentLimit}";
+                    _logger.LogWarning("?? {ErrorMessage}", errorMessage);
+                    
                     result.Success = false;
-                    result.Message = "No se encontraron documentos para procesar";
+                    result.Message = errorMessage;
                     
-                    // Registrar batch summary vacío
                     await _csvLoggingService.LogBatchSummaryAsync(batchId, 0, 0, 0, 0, issueStats);
-                    
                     return result;
                 }
-
-                _logger.LogInformation("?? Documentos encontrados: {Count}. IDs: [{DocumentIds}]", 
-                    documentIds.Count, string.Join(", ", documentIds));
+                
+                _logger.LogInformation("?? Iniciando procesamiento on-the-fly [{BatchId}] en modo {Mode} con estrategia {Strategy}. Documentos objetivo: {Count}/{MaxLimit}", 
+                    batchId, mode, updateStrategy, request.DocumentCount, _maxDocumentLimit);
 
                 var ocrTimes = new List<long>();
                 var updateTimes = new List<long>();
 
-                // Procesar cada documento
-                for (int i = 0; i < documentIds.Count; i++)
-                {
-                    var documentId = documentIds[i];
-                    var docStopwatch = Stopwatch.StartNew();
-
-                    try
-                    {
-                        _logger.LogInformation("?? Procesando documento {Current}/{Total}: ID {DocumentId}", 
-                            i + 1, documentIds.Count, documentId);
-
-                        // 1. Ejecutar OCR en el documento
-                        var ocrStopwatch = Stopwatch.StartNew();
-                        var ocrResult = await _invoiceAnalysisService.AnalyzeInvoiceSimplifiedAsync(
-                            documentId, result.Metadata.FileCabinetId, request.Language);
-                        ocrStopwatch.Stop();
-                        ocrTimes.Add(ocrStopwatch.ElapsedMilliseconds);
-
-                        var detail = new DocumentUpdateDetailDto
-                        {
-                            DocumentId = documentId,
-                            ProcessingTimeMs = docStopwatch.ElapsedMilliseconds
-                        };
-
-                        if (!ocrResult.Success || ocrResult.Data == null)
-                        {
-                            detail.Status = "Failed";
-                            detail.Message = $"Error en OCR: {ocrResult.Message}";
-                            detail.Errors.Add($"OCR falló: {ocrResult.Message}");
-                            result.FailedUpdates++;
-                            result.Errors.Add($" Documento {documentId}: Error en OCR");
-                        
-                            // Registrar fallo de OCR en CSV
-                            await _csvLoggingService.LogOcrFailureAsync(documentId, ocrResult.Message ?? "Error desconocido en OCR");
-                            issueStats["OcrFailures"]++;
-                        }
-                        else
-                        {
-                            // 2. Mapear campos de OCR a campos de DocuWare
-                            detail.DetectedFields = new DocumentOcrFieldsDto
-                            {
-                                TipoFactura = ocrResult.Data.TipoFactura,
-                                CodigoFactura = ocrResult.Data.CodigoFactura,
-                                NroFactura = ocrResult.Data.NroFactura,
-                                FechaFactura = ocrResult.Data.FechaFactura,
-                                CuitCliente = ocrResult.Data.CuitCliente,
-                                Confianza = ocrResult.Data.Confianza
-                            };
-
-                            // Registrar estadísticas especiales
-                            if (ocrResult.Data.TipoFactura == "E")
-                            {
-                                issueStats["TipoEDetected"]++;
-                                _logger.LogInformation("? Detectado tipo de factura E (nuevo tipo) en documento {DocumentId}", documentId);
-                            }
-
-                            // 3. Validar y preparar campos para actualización
-                            var validationResult = await ValidateAndPrepareFieldsAsync(
-                                documentId, ocrResult.Data, result.Metadata.FileCabinetId, request.OnlyUpdateEmptyFields);
-                            
-                            detail.UpdatedFields = validationResult.ValidatedFields;
-                            detail.SkippedFields = validationResult.SkippedFields;
-                            detail.ValidationWarnings = validationResult.ValidationWarnings;
-
-                            // Registrar problemas de validación en CSV
-                            if (validationResult.ValidationWarnings.Any())
-                            {
-                                issueStats["ValidationIssues"]++;
-                                foreach (var warning in validationResult.ValidationWarnings)
-                                {
-                                    // Determinar qué campo causó el problema
-                                    var fieldName = "Unknown";
-                                    var detectedValue = "Unknown";
-                                    
-                                    if (warning.Contains("LETRA_DOCUMENTO"))
-                                    {
-                                        fieldName = "LETRA_DOCUMENTO";
-                                        detectedValue = ocrResult.Data.TipoFactura ?? "";
-                                    }
-                                    else if (warning.Contains("CODIGO_DOCUMENTO"))
-                                    {
-                                        fieldName = "CODIGO_DOCUMENTO";
-                                        detectedValue = ocrResult.Data.CodigoFactura ?? "";
-                                    }
-                                    else if (warning.Contains("CUIT_CLIENTE"))
-                                    {
-                                        fieldName = "CUIT_CLIENTE";
-                                        detectedValue = ocrResult.Data.CuitCliente ?? "";
-                                        
-                                        // Caso especial para problemas de CUIT
-                                        await _csvLoggingService.LogCuitIssueAsync(documentId, detectedValue, 
-                                            "Validation Error", warning);
-                                        issueStats["CuitIssues"]++;
-                                    }
-                                    
-                                    await _csvLoggingService.LogValidationIssueAsync(documentId, fieldName, 
-                                        detectedValue, warning);
-                                }
-                            }
-
-                            // 4. Verificar si hay campos para actualizar
-                            if (HasFieldsToUpdate(validationResult.ValidatedFields))
-                            {
-                                // 4. Actualizar documento en DocuWare
-                                var updateStopwatch = Stopwatch.StartNew();
-                                var updateResult = await UpdateDocumentFieldsAsync(
-                                    documentId, validationResult.ValidatedFields, result.Metadata.FileCabinetId, request.DryRun);
-                                updateStopwatch.Stop();
-                                updateTimes.Add(updateStopwatch.ElapsedMilliseconds);
-
-                                detail.Status = updateResult.Status;
-                                detail.Message = updateResult.Message;
-                                detail.Errors.AddRange(updateResult.Errors);
-
-                                if (updateResult.Status == "Success")
-                                {
-                                    result.SuccessfulUpdates++;
-                                    _logger.LogInformation("? Documento {DocumentId} actualizado exitosamente", documentId);
-                                }
-                                else if (updateResult.Status == "Failed")
-                                {
-                                    result.FailedUpdates++;
-                                    result.Errors.Add($" Documento {documentId}: Error en actualización");
-                                    
-                                    // Registrar fallo de DocuWare en CSV
-                                    await _csvLoggingService.LogDocuWareUpdateFailureAsync(documentId, 
-                                        updateResult.Message, SerializeFields(validationResult.ValidatedFields));
-                                    issueStats["DocuWareFailures"]++;
-                                }
-                                else
-                                {
-                                    result.SkippedDocuments++;
-                                    _logger.LogInformation("??  Documento {DocumentId} omitido: {Message}", documentId, updateResult.Message);
-                                }
-                            }
-                            else
-                            {
-                                detail.Status = "NoChanges";
-                                detail.Message = "No se encontraron campos válidos para actualizar después de validaciones";
-                                result.SkippedDocuments++;
-                                _logger.LogInformation("??  Documento {DocumentId} sin cambios: no hay campos para actualizar", documentId);
-                            }
-                        }
-
-                        docStopwatch.Stop();
-                        detail.ProcessingTimeMs = docStopwatch.ElapsedMilliseconds;
-                        result.Details.Add(detail);
-                        result.TotalProcessed++;
-
-                        // Log de progreso cada 10 documentos
-                        if ((i + 1) % 10 == 0 || i == documentIds.Count - 1)
-                        {
-                            _logger.LogInformation("?? Progreso: {Current}/{Total} documentos procesados. " +
-                                "Modificados: {Modified}, Errores: {Failed}, Sin cambios: {Skipped}",
-                                i + 1, documentIds.Count, result.SuccessfulUpdates, result.FailedUpdates, result.SkippedDocuments);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        docStopwatch.Stop();
-                        _logger.LogError(ex, "Error procesando documento {DocumentId}", documentId);
-
-                        result.Details.Add(new DocumentUpdateDetailDto
-                        {
-                            DocumentId = documentId,
-                            Status = "Failed",
-                            Message = $"Error inesperado: {ex.Message}",
-                            ProcessingTimeMs = docStopwatch.ElapsedMilliseconds,
-                            Errors = { ex.Message }
-                        });
-
-                        result.FailedUpdates++;
-                        result.TotalProcessed++;
-                        result.Errors.Add($" Documento {documentId}: Error inesperado");
-                        
-                        // Registrar error inesperado
-                        await _csvLoggingService.LogOcrFailureAsync(documentId, $"Error inesperado: {ex.Message}");
-                        issueStats["OcrFailures"]++;
-                    }
-                }
+                // ?? PROCESAMIENTO ON-THE-FLY: Buscar y procesar inmediatamente
+                await ProcessDocumentsOnTheFlyAsync(
+                    result.Metadata.FileCabinetId, 
+                    request.DocumentCount,
+                    request.DryRun,
+                    request.OnlyUpdateEmptyFields,
+                    request.Language,
+                    batchId,
+                    result,
+                    issueStats,
+                    ocrTimes,
+                    updateTimes);
 
                 stopwatch.Stop();
 
@@ -290,13 +146,13 @@ namespace OCR_test.Services.Implementations
                 {
                     AverageOcrTimeMs = ocrTimes.Any() ? ocrTimes.Average() : 0,
                     AverageUpdateTimeMs = updateTimes.Any() ? updateTimes.Average() : 0,
-                    DocumentsPerSecond = result.TotalProcessed / (stopwatch.ElapsedMilliseconds / 1000.0),
+                    DocumentsPerSecond = result.TotalProcessed / Math.Max(stopwatch.ElapsedMilliseconds / 1000.0, 0.001),
                     TotalOcrTimeMs = ocrTimes.Sum(),
                     TotalUpdateTimeMs = updateTimes.Sum()
                 };
 
                 result.Success = true;
-                result.Message = $"Procesamiento completado en modo {mode} con estrategia {updateStrategy}. " +
+                result.Message = $"Procesamiento on-the-fly completado en modo {mode} con estrategia {updateStrategy}. " +
                     $"Procesados: {result.TotalProcessed}, Modificados: {result.SuccessfulUpdates}, " +
                     $"Errores: {result.FailedUpdates}, Sin cambios: {result.SkippedDocuments}";
 
@@ -304,7 +160,7 @@ namespace OCR_test.Services.Implementations
                 await _csvLoggingService.LogBatchSummaryAsync(batchId, result.TotalProcessed, 
                     result.SuccessfulUpdates, result.FailedUpdates, result.SkippedDocuments, issueStats);
 
-                _logger.LogInformation("?? Actualización masiva completada en {ElapsedMs}ms. {Message}",
+                _logger.LogInformation("?? Procesamiento on-the-fly completado en {ElapsedMs}ms. {Message}",
                     stopwatch.ElapsedMilliseconds, result.Message);
                     
                 _logger.LogInformation("?? Estadísticas CSV: Errores OCR: {OCR}, Validación: {Val}, DocuWare: {DW}, CUIT: {CUIT}, Tipo E: {TipoE}",
@@ -316,10 +172,10 @@ namespace OCR_test.Services.Implementations
             catch (Exception ex)
             {
                 stopwatch.Stop();
-                _logger.LogError(ex, "Error en actualización masiva");
+                _logger.LogError(ex, "Error en procesamiento on-the-fly");
 
                 result.Success = false;
-                result.Message = $"Error en actualización masiva: {ex.Message}";
+                result.Message = $"Error en procesamiento on-the-fly: {ex.Message}";
                 result.Errors.Add(ex.Message);
                 result.Metadata.EndTime = DateTime.UtcNow;
                 result.Metadata.TotalProcessingTimeMs = stopwatch.ElapsedMilliseconds;
@@ -332,106 +188,362 @@ namespace OCR_test.Services.Implementations
             }
         }
 
+        /// <summary>
+        /// ?? PROCESAMIENTO ON-THE-FLY: Busca y procesa documentos inmediatamente conforme los encuentra
+        /// </summary>
+        private async Task ProcessDocumentsOnTheFlyAsync(
+            string fileCabinetId,
+            int targetDocumentCount,
+            bool dryRun,
+            bool onlyUpdateEmptyFields,
+            string language,
+            string batchId,
+            BulkUpdateResultDto result,
+            Dictionary<string, int> issueStats,
+            List<long> ocrTimes,
+            List<long> updateTimes)
+        {
+            var connection = _connectionService.GetConnection();
+            var documentsFound = 0;
+            var startId = 1;
+            var maxSearchAttempts = targetDocumentCount * 20; // Buscar hasta 20x más para encontrar documentos reales
+            
+            _logger.LogInformation("?? Iniciando búsqueda on-the-fly de {Target} documentos desde ID {StartId}...", 
+                targetDocumentCount, startId);
+
+            try
+            {
+                // ?? Búsqueda y procesamiento on-the-fly
+                for (int testId = startId; testId <= startId + maxSearchAttempts && documentsFound < targetDocumentCount; testId++)
+                {
+                    try
+                    {
+                        // 1. Intentar obtener el documento para verificar si existe
+                        var documentResponse = await connection.GetFromDocumentForDocumentAsync(testId, fileCabinetId);
+                        
+                        if (documentResponse?.Content != null)
+                        {
+                            var document = documentResponse.Content.GetDocumentFromSelfRelation();
+                            if (document != null)
+                            {
+                                documentsFound++;
+                                _logger.LogInformation("? Documento {Found}/{Target} encontrado: ID {DocumentId} - Procesando inmediatamente...", 
+                                    documentsFound, targetDocumentCount, document.Id);
+
+                                // ?? 2. PROCESAR INMEDIATAMENTE el documento encontrado
+                                await ProcessSingleDocumentAsync(
+                                    document.Id, 
+                                    documentsFound, 
+                                    targetDocumentCount,
+                                    fileCabinetId,
+                                    dryRun,
+                                    onlyUpdateEmptyFields,
+                                    language,
+                                    result,
+                                    issueStats,
+                                    ocrTimes,
+                                    updateTimes);
+
+                                // Log de progreso cada 10 documentos
+                                if (documentsFound % 10 == 0 || documentsFound == targetDocumentCount)
+                                {
+                                    _logger.LogInformation("?? Progreso on-the-fly: {Current}/{Target} documentos procesados. " +
+                                        "Modificados: {Modified}, Errores: {Failed}, Sin cambios: {Skipped}",
+                                        documentsFound, targetDocumentCount, result.SuccessfulUpdates, result.FailedUpdates, result.SkippedDocuments);
+                                }
+
+                                // 3. Si ya encontramos suficientes, terminar
+                                if (documentsFound >= targetDocumentCount)
+                                {
+                                    _logger.LogInformation("?? Objetivo alcanzado: {Found} documentos procesados on-the-fly", documentsFound);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        // El documento no existe, continuar buscando sin hacer ruido en logs
+                        continue;
+                    }
+
+                    // Log de progreso de búsqueda cada 100 intentos
+                    if (testId % 100 == 0)
+                    {
+                        _logger.LogDebug("?? Búsqueda en progreso: Revisado hasta ID {TestId}, encontrados {Found}/{Target}", 
+                            testId, documentsFound, targetDocumentCount);
+                    }
+                }
+
+                if (documentsFound == 0)
+                {
+                    _logger.LogWarning("?? No se encontraron documentos en el FileCabinet después de {Attempts} intentos", maxSearchAttempts);
+                    throw new InvalidOperationException($"No se encontraron documentos en el FileCabinet {fileCabinetId}");
+                }
+                else if (documentsFound < targetDocumentCount)
+                {
+                    _logger.LogWarning("?? Solo se encontraron {Found} documentos de los {Target} solicitados después de {Attempts} intentos", 
+                        documentsFound, targetDocumentCount, maxSearchAttempts);
+                }
+
+                _logger.LogInformation("? Búsqueda on-the-fly completada: {Found} documentos encontrados y procesados", documentsFound);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "? Error en procesamiento on-the-fly");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// ?? Procesa un solo documento inmediatamente después de encontrarlo
+        /// </summary>
+        private async Task ProcessSingleDocumentAsync(
+            int documentId,
+            int currentIndex,
+            int totalTarget,
+            string fileCabinetId,
+            bool dryRun,
+            bool onlyUpdateEmptyFields,
+            string language,
+            BulkUpdateResultDto result,
+            Dictionary<string, int> issueStats,
+            List<long> ocrTimes,
+            List<long> updateTimes)
+        {
+            var docStopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                _logger.LogInformation("?? Procesando documento {Current}/{Total}: ID {DocumentId}", 
+                    currentIndex, totalTarget, documentId);
+
+                // 1. Ejecutar OCR en el documento
+                var ocrStopwatch = Stopwatch.StartNew();
+                var ocrResult = await _invoiceAnalysisService.AnalyzeInvoiceSimplifiedAsync(
+                    documentId, fileCabinetId, language);
+                ocrStopwatch.Stop();
+                ocrTimes.Add(ocrStopwatch.ElapsedMilliseconds);
+
+                var detail = new DocumentUpdateDetailDto
+                {
+                    DocumentId = documentId,
+                    ProcessingTimeMs = docStopwatch.ElapsedMilliseconds
+                };
+
+                if (!ocrResult.Success || ocrResult.Data == null)
+                {
+                    detail.Status = "Failed";
+                    detail.Message = $"Error en OCR: {ocrResult.Message}";
+                    detail.Errors.Add($"OCR falló: {ocrResult.Message}");
+                    result.FailedUpdates++;
+                    result.Errors.Add($"? Documento {documentId}: Error en OCR");
+                    
+                    // Registrar fallo de OCR en CSV
+                    await _csvLoggingService.LogOcrFailureAsync(documentId, ocrResult.Message ?? "Error desconocido en OCR");
+                    issueStats["OcrFailures"]++;
+                }
+                else
+                {
+                    // 2. Mapear campos de OCR a campos de DocuWare
+                    detail.DetectedFields = new DocumentOcrFieldsDto
+                    {
+                        TipoFactura = ocrResult.Data.TipoFactura,
+                        CodigoFactura = ocrResult.Data.CodigoFactura,
+                        NroFactura = ocrResult.Data.NroFactura,
+                        FechaFactura = ocrResult.Data.FechaFactura,
+                        CuitCliente = ocrResult.Data.CuitCliente,
+                        Confianza = ocrResult.Data.Confianza
+                    };
+
+                    // Registrar estadísticas especiales
+                    if (ocrResult.Data.TipoFactura == "E")
+                    {
+                        issueStats["TipoEDetected"]++;
+                        _logger.LogInformation("? Detectado tipo de factura E (nuevo tipo) en documento {DocumentId}", documentId);
+                    }
+
+                    // 3. Validar y preparar campos para actualización
+                    var validationResult = await ValidateAndPrepareFieldsAsync(
+                        documentId, ocrResult.Data, fileCabinetId, onlyUpdateEmptyFields);
+                    
+                    detail.UpdatedFields = validationResult.ValidatedFields;
+                    detail.SkippedFields = validationResult.SkippedFields;
+                    detail.ValidationWarnings = validationResult.ValidationWarnings;
+
+                    // Registrar problemas de validación en CSV
+                    if (validationResult.ValidationWarnings.Any())
+                    {
+                        issueStats["ValidationIssues"]++;
+                        foreach (var warning in validationResult.ValidationWarnings)
+                        {
+                            // Determinar qué campo causó el problema
+                            var fieldName = "Unknown";
+                            var detectedValue = "Unknown";
+                            
+                            if (warning.Contains("LETRA") || warning.Contains("LETRA_DOCUMENTO"))
+                            {
+                                fieldName = "LETRA";
+                                detectedValue = ocrResult.Data.TipoFactura ?? "";
+                            }
+                            else if (warning.Contains("CODIGO") || warning.Contains("CODIGO_DOCUMENTO"))
+                            {
+                                fieldName = "CODIGO";
+                                detectedValue = ocrResult.Data.CodigoFactura ?? "";
+                            }
+                            else if (warning.Contains("CUIT_CLIENTE"))
+                            {
+                                fieldName = "CUIT_CLIENTE";
+                                detectedValue = ocrResult.Data.CuitCliente ?? "";
+                                
+                                // Caso especial para problemas de CUIT
+                                await _csvLoggingService.LogCuitIssueAsync(documentId, detectedValue, 
+                                    "Validation Error", warning);
+                                issueStats["CuitIssues"]++;
+                            }
+                            
+                            await _csvLoggingService.LogValidationIssueAsync(documentId, fieldName, 
+                                detectedValue, warning);
+                        }
+                    }
+
+                    // 4. Verificar si hay campos para actualizar
+                    if (HasFieldsToUpdate(validationResult.ValidatedFields))
+                    {
+                        // 5. Actualizar documento en DocuWare
+                        var updateStopwatch = Stopwatch.StartNew();
+                        var updateResult = await UpdateDocumentFieldsAsync(
+                            documentId, validationResult.ValidatedFields, fileCabinetId, dryRun);
+                        updateStopwatch.Stop();
+                        updateTimes.Add(updateStopwatch.ElapsedMilliseconds);
+
+                        detail.Status = updateResult.Status;
+                        detail.Message = updateResult.Message;
+                        detail.Errors.AddRange(updateResult.Errors);
+
+                        if (updateResult.Status == "Success")
+                        {
+                            result.SuccessfulUpdates++;
+                            _logger.LogInformation("? Documento {DocumentId} actualizado exitosamente", documentId);
+                        }
+                        else if (updateResult.Status == "Failed")
+                        {
+                            result.FailedUpdates++;
+                            result.Errors.Add($"? Documento {documentId}: Error en actualización");
+                            
+                            // Registrar fallo de DocuWare en CSV
+                            await _csvLoggingService.LogDocuWareUpdateFailureAsync(documentId, 
+                                updateResult.Message, SerializeFields(validationResult.ValidatedFields));
+                            issueStats["DocuWareFailures"]++;
+                        }
+                        else
+                        {
+                            result.SkippedDocuments++;
+                            _logger.LogInformation("?? Documento {DocumentId} omitido: {Message}", documentId, updateResult.Message);
+                        }
+                    }
+                    else
+                    {
+                        detail.Status = "NoChanges";
+                        detail.Message = "No se encontraron campos válidos para actualizar después de validaciones";
+                        result.SkippedDocuments++;
+                        _logger.LogInformation("?? Documento {DocumentId} sin cambios: no hay campos para actualizar", documentId);
+                    }
+                }
+
+                docStopwatch.Stop();
+                detail.ProcessingTimeMs = docStopwatch.ElapsedMilliseconds;
+                result.Details.Add(detail);
+                result.TotalProcessed++;
+            }
+            catch (Exception ex)
+            {
+                docStopwatch.Stop();
+                _logger.LogError(ex, "Error procesando documento {DocumentId}", documentId);
+
+                result.Details.Add(new DocumentUpdateDetailDto
+                {
+                    DocumentId = documentId,
+                    Status = "Failed",
+                    Message = $"Error inesperado: {ex.Message}",
+                    ProcessingTimeMs = docStopwatch.ElapsedMilliseconds,
+                    Errors = { ex.Message }
+                });
+
+                result.FailedUpdates++;
+                result.TotalProcessed++;
+                result.Errors.Add($"? Documento {documentId}: Error inesperado");
+                
+                // Registrar error inesperado
+                await _csvLoggingService.LogOcrFailureAsync(documentId, $"Error inesperado: {ex.Message}");
+                issueStats["OcrFailures"]++;
+            }
+        }
+
+        /// <summary>
+        /// ?? LEGACY: Obtiene lista de documentos (usado solo para endpoint de información)
+        /// </summary>
         public async Task<List<int>> GetDocumentListAsync(string fileCabinetId, int count)
         {
             try
             {
-                _logger.LogInformation("?? Obteniendo {Count} documentos REALES del FileCabinet {FileCabinetId}", 
+                _logger.LogInformation("?? LEGACY: Obteniendo lista de {Count} documentos del FileCabinet {FileCabinetId} (solo para información)", 
                     count, fileCabinetId);
 
                 var connection = _connectionService.GetConnection();
+                var realDocumentIds = new List<int>();
+                var documentsFound = 0;
+                var startId = 1;
+                var maxAttempts = Math.Min(count * 10, 1000);
                 
-                try
+                for (int testId = startId; testId <= startId + maxAttempts && documentsFound < count; testId++)
                 {
-                    // Intentar obtener documentos usando conexión directa
-                    _logger.LogInformation("?? Intentando obtener documentos del FileCabinet usando conexión directa...");
-                    
-                    // Obtener documentos usando un enfoque directo
-                    // Esto es un ejemplo de cómo podría funcionar con la API real
-                    var realDocumentIds = new List<int>();
-                    
-                    // MÉTODO 1: Intentar buscar documentos por rango de IDs
-                    var searchAttempts = new List<int>();
-                    var startId = 1;
-                    var documentsFound = 0;
-                    
-                    _logger.LogInformation("?? Buscando documentos existentes en el FileCabinet...");
-                    
-                    // Intentar encontrar documentos reales probando IDs
-                    for (int testId = startId; testId <= startId + (count * 10) && documentsFound < count; testId++)
+                    try
                     {
-                        try
+                        var documentResponse = await connection.GetFromDocumentForDocumentAsync(testId, fileCabinetId);
+                        
+                        if (documentResponse?.Content != null)
                         {
-                            // Intentar obtener el documento para verificar si existe
-                            var documentResponse = await connection.GetFromDocumentForDocumentAsync(testId, fileCabinetId);
-                            
-                            if (documentResponse?.Content != null)
+                            var document = documentResponse.Content.GetDocumentFromSelfRelation();
+                            if (document != null)
                             {
-                                var document = documentResponse.Content.GetDocumentFromSelfRelation();
-                                if (document != null)
-                                {
-                                    realDocumentIds.Add(document.Id);
-                                    documentsFound++;
-                                    _logger.LogInformation("? Documento encontrado: ID {DocumentId}", document.Id);
-                                }
+                                realDocumentIds.Add(document.Id);
+                                documentsFound++;
                             }
                         }
-                        catch (Exception)
-                        {
-                            // El documento no existe, continuar buscando
-                            continue;
-                        }
-                        
-                        // No buscar más de lo necesario
-                        if (documentsFound >= count) break;
+                    }
+                    catch (Exception)
+                    {
+                        continue;
                     }
                     
-                    if (realDocumentIds.Any())
-                    {
-                        _logger.LogInformation("?? Se encontraron {Found} documentos reales: [{DocumentIds}]", 
-                            realDocumentIds.Count, 
-                            string.Join(", ", realDocumentIds.Take(10)) + (realDocumentIds.Count > 10 ? "..." : ""));
-                        
-                        return realDocumentIds;
-                    }
-                    else
-                    {
-                        _logger.LogWarning("?? No se encontraron documentos reales en el FileCabinet");
-                        throw new InvalidOperationException("No se encontraron documentos en el FileCabinet");
-                    }
+                    if (documentsFound >= count) break;
                 }
-                catch (Exception searchEx)
+                
+                if (realDocumentIds.Any())
                 {
-                    _logger.LogWarning(searchEx, "?? No se pudo usar búsqueda directa, usando IDs de prueba específicos");
-                    
-                    // MÉTODO 2: Usar IDs de prueba conocidos para el entorno de demostración
-                    _logger.LogInformation("?? Usando IDs de documentos conocidos para entorno de prueba");
-                    
-                    // IDs que podrían existir en un entorno de prueba real
-                    var knownTestIds = new List<int>();
-                    
-                    // Generar IDs que sean más realistas para un entorno de prueba
+                    return realDocumentIds;
+                }
+                else
+                {
+                    // Generar IDs de ejemplo para endpoint informativo
+                    var exampleIds = new List<int>();
                     var random = new Random();
                     var baseIds = new[] { 100, 200, 300, 500, 1000, 1500, 2000 };
                     
-                    for (int i = 0; i < count; i++)
+                    for (int i = 0; i < Math.Min(count, 20); i++)
                     {
                         var baseId = baseIds[i % baseIds.Length];
                         var randomOffset = random.Next(1, 50);
-                        knownTestIds.Add(baseId + randomOffset);
+                        exampleIds.Add(baseId + randomOffset);
                     }
                     
-                    _logger.LogInformation("?? IDs de prueba generados: [{TestIds}]", 
-                        string.Join(", ", knownTestIds.Take(10)) + (knownTestIds.Count > 10 ? "..." : ""));
-                    
-                    _logger.LogWarning("? IMPORTANTE: Estos son IDs de prueba. Para producción, implementar búsqueda real con DocuWare API");
-                    
-                    return knownTestIds;
+                    return exampleIds;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "? Error crítico obteniendo documentos del FileCabinet {FileCabinetId}", fileCabinetId);
+                _logger.LogError(ex, "? Error obteniendo lista de documentos del FileCabinet {FileCabinetId}", fileCabinetId);
                 throw new InvalidOperationException($"No se pudieron obtener documentos del FileCabinet {fileCabinetId}: {ex.Message}", ex);
             }
         }
@@ -451,7 +563,6 @@ namespace OCR_test.Services.Implementations
 
             try
             {
-                // Contar campos válidos antes de procesar
                 var fieldsToUpdateCount = CountValidFields(fields);
                 
                 if (fieldsToUpdateCount == 0)
@@ -460,7 +571,6 @@ namespace OCR_test.Services.Implementations
                     result.Message = "No hay campos válidos para actualizar";
                     stopwatch.Stop();
                     result.ProcessingTimeMs = stopwatch.ElapsedMilliseconds;
-                    _logger.LogInformation("??  Documento {DocumentId}: No hay campos para actualizar", documentId);
                     return result;
                 }
 
@@ -477,24 +587,22 @@ namespace OCR_test.Services.Implementations
                 }
 
                 var connection = _connectionService.GetConnection();
-                
-                // Obtener el documento
                 var documentResponse = await connection.GetFromDocumentForDocumentAsync(documentId, fileCabinetId);
                 var document = documentResponse.Content.GetDocumentFromSelfRelation();
 
-                // Preparar campos para actualización usando la sintaxis correcta
+                // ? USAR NOMBRES CORRECTOS DE CAMPOS BIMBO
                 var fieldsToUpdate = new List<DocumentIndexField>();
 
                 if (!string.IsNullOrEmpty(fields.LETRA_DOCUMENTO))
                 {
-                    fieldsToUpdate.Add(DocumentIndexField.Create("LETRA_DOCUMENTO", fields.LETRA_DOCUMENTO));
-                    _logger.LogInformation("?? Preparando campo LETRA_DOCUMENTO: {Value}", fields.LETRA_DOCUMENTO);
+                    fieldsToUpdate.Add(DocumentIndexField.Create("LETRA", fields.LETRA_DOCUMENTO));
+                    _logger.LogInformation("?? Preparando campo LETRA: {Value}", fields.LETRA_DOCUMENTO);
                 }
 
                 if (!string.IsNullOrEmpty(fields.CODIGO_DOCUMENTO))
                 {
-                    fieldsToUpdate.Add(DocumentIndexField.Create("CODIGO_DOCUMENTO", fields.CODIGO_DOCUMENTO));
-                    _logger.LogInformation("?? Preparando campo CODIGO_DOCUMENTO: {Value}", fields.CODIGO_DOCUMENTO);
+                    fieldsToUpdate.Add(DocumentIndexField.Create("CODIGO", fields.CODIGO_DOCUMENTO));
+                    _logger.LogInformation("?? Preparando campo CODIGO: {Value}", fields.CODIGO_DOCUMENTO);
                 }
 
                 if (!string.IsNullOrEmpty(fields.NDEG_FACTURA))
@@ -505,7 +613,6 @@ namespace OCR_test.Services.Implementations
 
                 if (!string.IsNullOrEmpty(fields.DATE))
                 {
-                    // Intentar convertir la fecha del formato DD/MM/yyyy a DateTime
                     if (DateTime.TryParseExact(fields.DATE, "dd/MM/yyyy", 
                         System.Globalization.CultureInfo.InvariantCulture, 
                         System.Globalization.DateTimeStyles.None, out var parsedDate))
@@ -515,9 +622,8 @@ namespace OCR_test.Services.Implementations
                     }
                     else
                     {
-                        // Si no se puede parsear, guardarlo como string
                         fieldsToUpdate.Add(DocumentIndexField.Create("DATE", fields.DATE));
-                        _logger.LogWarning("??  Campo DATE no se pudo parsear como fecha, guardando como string: {Value}", fields.DATE);
+                        _logger.LogWarning("?? Campo DATE no se pudo parsear como fecha, guardando como string: {Value}", fields.DATE);
                     }
                 }
 
@@ -529,7 +635,6 @@ namespace OCR_test.Services.Implementations
 
                 if (fieldsToUpdate.Any())
                 {
-                    // Crear el objeto DocumentIndexFields
                     var fieldsUpdate = new DocumentIndexFields
                     {
                         Field = fieldsToUpdate
@@ -538,7 +643,6 @@ namespace OCR_test.Services.Implementations
                     _logger.LogInformation("?? Actualizando documento {DocumentId} con {Count} campos en DocuWare...",
                         documentId, fieldsToUpdate.Count);
 
-                    // Ejecutar actualización usando la sintaxis correcta
                     var updateResult = await document.PutToFieldsRelationForDocumentIndexFieldsAsync(fieldsUpdate);
 
                     _logger.LogInformation("? Documento {DocumentId} actualizado exitosamente en DocuWare con {Count} campos",
@@ -549,7 +653,6 @@ namespace OCR_test.Services.Implementations
                 }
                 else
                 {
-                    _logger.LogInformation("??  No hay campos válidos para actualizar en documento {DocumentId}", documentId);
                     result.Status = "NoChanges";
                     result.Message = "No hay campos válidos para actualizar";
                 }
@@ -573,17 +676,11 @@ namespace OCR_test.Services.Implementations
 
         #region Métodos de validación y utilidad
 
-        /// <summary>
-        /// Valida el tipo de factura (A, B o E) ? INCLUYE NUEVO TIPO E
-        /// </summary>
         private bool IsValidInvoiceType(string invoiceType)
         {
             return invoiceType == "A" || invoiceType == "B" || invoiceType == "E";
         }
 
-        /// <summary>
-        /// Valida el código de factura (001, 006 o 019) ? INCLUYE NUEVO CÓDIGO 019
-        /// </summary>
         private bool IsValidInvoiceCode(string invoiceCode)
         {
             return invoiceCode == "001" || invoiceCode == "006" || invoiceCode == "019";
@@ -614,10 +711,10 @@ namespace OCR_test.Services.Implementations
             var fieldsList = new List<string>();
             
             if (!string.IsNullOrEmpty(fields.LETRA_DOCUMENTO))
-                fieldsList.Add($"LETRA_DOCUMENTO={fields.LETRA_DOCUMENTO}");
+                fieldsList.Add($"LETRA={fields.LETRA_DOCUMENTO}");
             
             if (!string.IsNullOrEmpty(fields.CODIGO_DOCUMENTO))
-                fieldsList.Add($"CODIGO_DOCUMENTO={fields.CODIGO_DOCUMENTO}");
+                fieldsList.Add($"CODIGO={fields.CODIGO_DOCUMENTO}");
             
             if (!string.IsNullOrEmpty(fields.NDEG_FACTURA))
                 fieldsList.Add($"NDEG_FACTURA={fields.NDEG_FACTURA}");
@@ -636,7 +733,8 @@ namespace OCR_test.Services.Implementations
             if (string.IsNullOrWhiteSpace(invoiceNumber))
                 return false;
 
-            var pattern = @"^\d{5}-\d{8}$";
+            // ? PATRÓN MEJORADO PARA NÚMEROS COMO 00723-0019175
+            var pattern = @"^\d{5}-\d{7,8}$";
             return System.Text.RegularExpressions.Regex.IsMatch(invoiceNumber, pattern);
         }
 
@@ -688,76 +786,120 @@ namespace OCR_test.Services.Implementations
                     currentFields = await GetCurrentDocumentFieldsAsync(documentId, fileCabinetId);
                 }
 
-                // Validar LETRA_DOCUMENTO (ahora incluye A, B y E)
+                // ? VALIDAR LETRA (campo LETRA en DocuWare)
                 if (!string.IsNullOrEmpty(ocrData.TipoFactura))
                 {
-                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "LETRA_DOCUMENTO"))
+                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "LETRA"))
                     {
+                        // ? Log si se detectó un valor placeholder
+                        if (onlyUpdateEmptyFields && currentFields.ContainsKey("LETRA") && _logPlaceholderReplacements)
+                        {
+                            var currentValue = currentFields["LETRA"];
+                            if (!string.IsNullOrWhiteSpace(currentValue) && _emptyFieldValues.Any(ev => 
+                                string.Equals(ev, currentValue.Trim(), StringComparison.OrdinalIgnoreCase)))
+                            {
+                                _logger.LogInformation("?? LETRA: Reemplazando valor placeholder '{OldValue}' por '{NewValue}' en documento {DocumentId}", 
+                                    currentValue, ocrData.TipoFactura, documentId);
+                            }
+                        }
+
                         if (IsValidInvoiceType(ocrData.TipoFactura))
                         {
                             validatedFields.LETRA_DOCUMENTO = ocrData.TipoFactura;
-                            _logger.LogInformation("? LETRA_DOCUMENTO validado: {Value} para documento {DocumentId}", 
+                            _logger.LogInformation("? LETRA validado: {Value} para documento {DocumentId}", 
                                 ocrData.TipoFactura, documentId);
                         }
                         else
                         {
-                            result.SkippedFields.Add("LETRA_DOCUMENTO");
-                            result.ValidationWarnings.Add($"LETRA_DOCUMENTO inválido: '{ocrData.TipoFactura}' (solo se permiten A, B o E)");
-                            _logger.LogWarning("??  LETRA_DOCUMENTO inválido para documento {DocumentId}: {Value}", 
+                            result.SkippedFields.Add("LETRA");
+                            result.ValidationWarnings.Add($"LETRA inválido: '{ocrData.TipoFactura}' (solo se permiten A, B o E)");
+                            _logger.LogWarning("?? LETRA inválido para documento {DocumentId}: {Value}", 
                                 documentId, ocrData.TipoFactura);
                         }
                     }
                     else
                     {
-                        result.SkippedFields.Add("LETRA_DOCUMENTO");
-                        result.ValidationWarnings.Add("LETRA_DOCUMENTO omitido: campo ya tiene valor y onlyUpdateEmptyFields=true");
+                        result.SkippedFields.Add("LETRA");
+                        result.ValidationWarnings.Add("LETRA omitido: campo ya tiene valor real y onlyUpdateEmptyFields=true");
+                        _logger.LogInformation("?? LETRA omitido para documento {DocumentId}: campo tiene valor real '{Value}'", 
+                            documentId, currentFields.GetValueOrDefault("LETRA", ""));
                     }
                 }
 
-                // Validar CODIGO_DOCUMENTO (ahora incluye 001, 006 y 019)
+                // ? VALIDAR CODIGO (campo CODIGO en DocuWare)
                 if (!string.IsNullOrEmpty(ocrData.CodigoFactura))
                 {
-                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "CODIGO_DOCUMENTO"))
+                    if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "CODIGO"))
                     {
+                        // ? Log si se detectó un valor placeholder
+                        if (onlyUpdateEmptyFields && currentFields.ContainsKey("CODIGO") && _logPlaceholderReplacements)
+                        {
+                            var currentValue = currentFields["CODIGO"];
+                            if (!string.IsNullOrWhiteSpace(currentValue) && _emptyFieldValues.Any(ev => 
+                                string.Equals(ev, currentValue.Trim(), StringComparison.OrdinalIgnoreCase)))
+                            {
+                                _logger.LogInformation("?? CODIGO: Reemplazando valor placeholder '{OldValue}' por '{NewValue}' en documento {DocumentId}", 
+                                    currentValue, ocrData.CodigoFactura, documentId);
+                            }
+                        }
+
                         if (IsValidInvoiceCode(ocrData.CodigoFactura))
                         {
                             validatedFields.CODIGO_DOCUMENTO = ocrData.CodigoFactura;
-                            _logger.LogInformation("? CODIGO_DOCUMENTO validado: {Value} para documento {DocumentId}", 
+                            _logger.LogInformation("? CODIGO validado: {Value} para documento {DocumentId}", 
                                 ocrData.CodigoFactura, documentId);
                         }
                         else
                         {
-                            result.SkippedFields.Add("CODIGO_DOCUMENTO");
-                            result.ValidationWarnings.Add($"CODIGO_DOCUMENTO inválido: '{ocrData.CodigoFactura}' (solo se permiten 001, 006 o 019)");
-                            _logger.LogWarning("??  CODIGO_DOCUMENTO inválido para documento {DocumentId}: {Value}", 
+                            result.SkippedFields.Add("CODIGO");
+                            result.ValidationWarnings.Add($"CODIGO inválido: '{ocrData.CodigoFactura}' (solo se permiten 001, 006 o 019)");
+                            _logger.LogWarning("?? CODIGO inválido para documento {DocumentId}: {Value}", 
                                 documentId, ocrData.CodigoFactura);
                         }
                     }
                     else
                     {
-                        result.SkippedFields.Add("CODIGO_DOCUMENTO");
-                        result.ValidationWarnings.Add("CODIGO_DOCUMENTO omitido: campo ya tiene valor y onlyUpdateEmptyFields=true");
+                        result.SkippedFields.Add("CODIGO");
+                        result.ValidationWarnings.Add("CODIGO omitido: campo ya tiene valor real y onlyUpdateEmptyFields=true");
+                        _logger.LogInformation("?? CODIGO omitido para documento {DocumentId}: campo tiene valor real '{Value}'", 
+                            documentId, currentFields.GetValueOrDefault("CODIGO", ""));
                     }
                 }
 
-                // Validar otros campos...
+                // ? VALIDAR OTROS CAMPOS CON MEJORES LOGS DE PLACEHOLDER
                 if (!string.IsNullOrEmpty(ocrData.NroFactura))
                 {
                     if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "NDEG_FACTURA"))
                     {
+                        if (onlyUpdateEmptyFields && currentFields.ContainsKey("NDEG_FACTURA") && _logPlaceholderReplacements)
+                        {
+                            var currentValue = currentFields["NDEG_FACTURA"];
+                            if (!string.IsNullOrWhiteSpace(currentValue) && _emptyFieldValues.Any(ev => 
+                                string.Equals(ev, currentValue.Trim(), StringComparison.OrdinalIgnoreCase)))
+                            {
+                                _logger.LogInformation("?? NDEG_FACTURA: Reemplazando valor placeholder '{OldValue}' por '{NewValue}' en documento {DocumentId}", 
+                                    currentValue, ocrData.NroFactura, documentId);
+                            }
+                        }
+
                         if (IsValidInvoiceNumber(ocrData.NroFactura))
                         {
                             validatedFields.NDEG_FACTURA = ocrData.NroFactura;
+                            _logger.LogInformation("? NDEG_FACTURA validado: {Value} para documento {DocumentId}", 
+                                ocrData.NroFactura, documentId);
                         }
                         else
                         {
                             result.SkippedFields.Add("NDEG_FACTURA");
                             result.ValidationWarnings.Add($"NDEG_FACTURA formato inválido: '{ocrData.NroFactura}'");
+                            _logger.LogWarning("?? NDEG_FACTURA formato inválido para documento {DocumentId}: {Value}", 
+                                documentId, ocrData.NroFactura);
                         }
                     }
                     else
                     {
                         result.SkippedFields.Add("NDEG_FACTURA");
+                        result.ValidationWarnings.Add("NDEG_FACTURA omitido: campo ya tiene valor real y onlyUpdateEmptyFields=true");
                     }
                 }
 
@@ -765,19 +907,35 @@ namespace OCR_test.Services.Implementations
                 {
                     if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "DATE"))
                     {
+                        if (onlyUpdateEmptyFields && currentFields.ContainsKey("DATE") && _logPlaceholderReplacements)
+                        {
+                            var currentValue = currentFields["DATE"];
+                            if (!string.IsNullOrWhiteSpace(currentValue) && _emptyFieldValues.Any(ev => 
+                                string.Equals(ev, currentValue.Trim(), StringComparison.OrdinalIgnoreCase)))
+                            {
+                                _logger.LogInformation("?? DATE: Reemplazando valor placeholder '{OldValue}' por '{NewValue}' en documento {DocumentId}", 
+                                    currentValue, ocrData.FechaFactura, documentId);
+                            }
+                        }
+
                         if (IsValidDate(ocrData.FechaFactura))
                         {
                             validatedFields.DATE = ocrData.FechaFactura;
+                            _logger.LogInformation("? DATE validado: {Value} para documento {DocumentId}", 
+                                ocrData.FechaFactura, documentId);
                         }
                         else
                         {
                             result.SkippedFields.Add("DATE");
                             result.ValidationWarnings.Add($"DATE formato inválido: '{ocrData.FechaFactura}'");
+                            _logger.LogWarning("?? DATE formato inválido para documento {DocumentId}: {Value}", 
+                                documentId, ocrData.FechaFactura);
                         }
                     }
                     else
                     {
                         result.SkippedFields.Add("DATE");
+                        result.ValidationWarnings.Add("DATE omitido: campo ya tiene valor real y onlyUpdateEmptyFields=true");
                     }
                 }
 
@@ -785,19 +943,35 @@ namespace OCR_test.Services.Implementations
                 {
                     if (!onlyUpdateEmptyFields || IsFieldEmpty(currentFields, "CUIT_CLIENTE"))
                     {
+                        if (onlyUpdateEmptyFields && currentFields.ContainsKey("CUIT_CLIENTE") && _logPlaceholderReplacements)
+                        {
+                            var currentValue = currentFields["CUIT_CLIENTE"];
+                            if (!string.IsNullOrWhiteSpace(currentValue) && _emptyFieldValues.Any(ev => 
+                                string.Equals(ev, currentValue.Trim(), StringComparison.OrdinalIgnoreCase)))
+                            {
+                                _logger.LogInformation("?? CUIT_CLIENTE: Reemplazando valor placeholder '{OldValue}' por '{NewValue}' en documento {DocumentId}", 
+                                    currentValue, ocrData.CuitCliente, documentId);
+                            }
+                        }
+
                         if (IsValidCuit(ocrData.CuitCliente))
                         {
                             validatedFields.CUIT_CLIENTE = ocrData.CuitCliente;
+                            _logger.LogInformation("? CUIT_CLIENTE validado: {Value} para documento {DocumentId}", 
+                                ocrData.CuitCliente, documentId);
                         }
                         else
                         {
                             result.SkippedFields.Add("CUIT_CLIENTE");
                             result.ValidationWarnings.Add($"CUIT_CLIENTE formato inválido: '{ocrData.CuitCliente}'");
+                            _logger.LogWarning("?? CUIT_CLIENTE formato inválido para documento {DocumentId}: {Value}", 
+                                documentId, ocrData.CuitCliente);
                         }
                     }
                     else
                     {
                         result.SkippedFields.Add("CUIT_CLIENTE");
+                        result.ValidationWarnings.Add("CUIT_CLIENTE omitido: campo ya tiene valor real y onlyUpdateEmptyFields=true");
                     }
                 }
 
@@ -844,10 +1018,61 @@ namespace OCR_test.Services.Implementations
         private bool IsFieldEmpty(Dictionary<string, string?> currentFields, string fieldName)
         {
             if (!currentFields.ContainsKey(fieldName))
+            {
+                if (_logPlaceholderReplacements)
+                {
+                    _logger.LogDebug("?? Campo {FieldName} no existe en el documento - se considerará vacío", fieldName);
+                }
                 return true;
+            }
 
             var value = currentFields[fieldName];
-            return string.IsNullOrWhiteSpace(value);
+            
+            // Null o realmente vacío
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                if (_logPlaceholderReplacements)
+                {
+                    _logger.LogDebug("?? Campo {FieldName} es null o vacío - se considerará vacío", fieldName);
+                }
+                return true;
+            }
+
+            // ? LÓGICA CONFIGURABLE: Verificar si el valor está en la lista de valores considerados "vacíos"
+            if (_treatEmptyValuesAsPlaceholders)
+            {
+                var trimmedValue = value.Trim();
+                
+                // Buscar coincidencia exacta (case-sensitive)
+                if (_emptyFieldValues.Contains(trimmedValue))
+                {
+                    if (_logPlaceholderReplacements)
+                    {
+                        _logger.LogInformation("?? Campo {FieldName} contiene valor placeholder '{Value}' - se considerará vacío para actualización", 
+                            fieldName, trimmedValue);
+                    }
+                    return true;
+                }
+                
+                // Buscar coincidencia insensible a mayúsculas/minúsculas
+                if (_emptyFieldValues.Any(ev => string.Equals(ev, trimmedValue, StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (_logPlaceholderReplacements)
+                    {
+                        _logger.LogInformation("?? Campo {FieldName} contiene valor placeholder '{Value}' (case-insensitive) - se considerará vacío para actualización", 
+                            fieldName, trimmedValue);
+                    }
+                    return true;
+                }
+            }
+
+            // El campo tiene un valor real
+            if (_logPlaceholderReplacements)
+            {
+                _logger.LogDebug("?? Campo {FieldName} tiene valor real '{Value}' - NO se actualizará en modo OnlyUpdateEmptyFields", 
+                    fieldName, value?.Length > 50 ? value.Substring(0, 50) + "..." : value);
+            }
+            return false;
         }
 
         #endregion

@@ -1072,7 +1072,7 @@ namespace OCR_test.Services.Implementations
         {
             try
             {
-                _logger.LogInformation("Analizando texto SIMPLIFICADO ({Length} caracteres)", extractedText.Length);
+                _logger.LogInformation("?? Análisis SIMPLIFICADO OPTIMIZADO para Tesseract ({Length} caracteres)", extractedText.Length);
 
                 var data = new SimplifiedInvoiceDataDto();
                 var warnings = new List<string>();
@@ -1085,7 +1085,6 @@ namespace OCR_test.Services.Implementations
                     // Auto-completar si solo se detectó uno de los dos
                     if (detectionResult.tipoDetectado != null && detectionResult.codigoDetectado == null)
                     {
-                        // Se detectó letra, inferir código
                         detectionResult.codigoDetectado = detectionResult.tipoDetectado switch
                         {
                             "A" => "001",
@@ -1093,12 +1092,11 @@ namespace OCR_test.Services.Implementations
                             "E" => "019",
                             _ => null
                         };
-                        _logger.LogInformation("? Auto-completado: Tipo {Tipo} ? Código {Codigo}", 
+                        _logger.LogInformation("?? Auto-completado: Tipo {Tipo} ? Código {Codigo}", 
                             detectionResult.tipoDetectado, detectionResult.codigoDetectado);
                     }
                     else if (detectionResult.codigoDetectado != null && detectionResult.tipoDetectado == null)
                     {
-                        // Se detectó código, inferir letra
                         detectionResult.tipoDetectado = detectionResult.codigoDetectado switch
                         {
                             "001" => "A",
@@ -1106,7 +1104,7 @@ namespace OCR_test.Services.Implementations
                             "019" => "E",
                             _ => null
                         };
-                        _logger.LogInformation("? Auto-completado: Código {Codigo} ? Tipo {Tipo}", 
+                        _logger.LogInformation("?? Auto-completado: Código {Codigo} ? Tipo {Tipo}", 
                             detectionResult.codigoDetectado, detectionResult.tipoDetectado);
                     }
 
@@ -1114,8 +1112,8 @@ namespace OCR_test.Services.Implementations
                     data.CodigoFactura = detectionResult.codigoDetectado;
                     confidenceScores.Add(detectionResult.confidence);
                     
-                    _logger.LogInformation("? Tipo de factura: {Tipo}, Código: {Codigo}", 
-                        data.TipoFactura, data.CodigoFactura);
+                    _logger.LogInformation("? Tipo/Código detectado: {Tipo}/{Codigo} (confianza: {Conf:F2})", 
+                        data.TipoFactura, data.CodigoFactura, detectionResult.confidence);
                 }
                 else
                 {
@@ -1129,34 +1127,36 @@ namespace OCR_test.Services.Implementations
                 {
                     data.NroFactura = numeroFactura.Value;
                     confidenceScores.Add(numeroFactura.Confidence);
-                    _logger.LogInformation("? Número de factura detectado: {Numero}", numeroFactura.Value);
+                    _logger.LogInformation("? Número de factura detectado: {Numero} (confianza: {Conf:F2})", 
+                        numeroFactura.Value, numeroFactura.Confidence);
                 }
                 else
                 {
-                    warnings.Add("No se pudo detectar el número de factura");
+                    warnings.Add("No se pudo detectar el número de factura en formato XXXXX-XXXXXXXX");
                 }
 
                 // 3. DETECTAR FECHA DE FACTURA
                 var fechaFactura = DetectInvoiceDate(extractedText);
                 if (fechaFactura != null)
                 {
-                    // Formatear fecha como DD/mm/yyyy
                     data.FechaFactura = fechaFactura.ParsedDate?.ToString("dd/MM/yyyy");
                     confidenceScores.Add(fechaFactura.Confidence);
-                    _logger.LogInformation("? Fecha de factura detectada: {Fecha}", data.FechaFactura);
+                    _logger.LogInformation("? Fecha de factura detectada: {Fecha} (confianza: {Conf:F2})", 
+                        data.FechaFactura, fechaFactura.Confidence);
                 }
                 else
                 {
-                    warnings.Add("No se pudo detectar la fecha de factura");
+                    warnings.Add("No se pudo detectar la fecha de factura en formato DD/MM/YYYY");
                 }
 
-                // 4. DETECTAR CUIT DEL CLIENTE (SIEMPRE EL SEGUNDO)
+                // 4. DETECTAR CUIT DEL CLIENTE (SEGUNDO CUIT)
                 var cuitCliente = DetectClientCuitSecond(extractedText);
                 if (cuitCliente != null)
                 {
                     data.CuitCliente = cuitCliente.Value;
                     confidenceScores.Add(cuitCliente.Confidence);
-                    _logger.LogInformation("? CUIT del cliente detectado (segundo): {Cuit}", cuitCliente.Value);
+                    _logger.LogInformation("? CUIT del cliente detectado: {Cuit} (confianza: {Conf:F2})", 
+                        cuitCliente.Value, cuitCliente.Confidence);
                 }
                 else
                 {
@@ -1174,17 +1174,19 @@ namespace OCR_test.Services.Implementations
                     data.CuitCliente
                 }.Count(f => !string.IsNullOrEmpty(f));
 
+                var status = fieldsDetected >= 3 ? "Buena detección" : fieldsDetected >= 2 ? "Detección parcial" : "Detección insuficiente";
+
                 return new SimplifiedInvoiceResultDto
                 {
                     Success = true,
-                    Message = $"Análisis simplificado completado. Campos detectados: {fieldsDetected}/5. Confianza: {data.Confianza:F2}",
+                    Message = $"Análisis optimizado para Tesseract completado. Campos detectados: {fieldsDetected}/5. {status}. Confianza: {data.Confianza:F2}",
                     Data = data,
                     Warnings = warnings
                 };
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error en análisis simplificado de texto");
+                _logger.LogError(ex, "Error en análisis simplificado optimizado para Tesseract");
 
                 return new SimplifiedInvoiceResultDto
                 {
@@ -1272,234 +1274,387 @@ namespace OCR_test.Services.Implementations
 
         private (string? tipoDetectado, string? codigoDetectado, float confidence) DetectArgentineInvoiceTypeAndCodeSimplified(string text)
         {
-            _logger.LogInformation("Detectando tipo y código de factura argentina...");
+            _logger.LogInformation("?? Detectando tipo y código de factura con patrones optimizados para Tesseract...");
 
             string? tipoDetectado = null;
             string? codigoDetectado = null;
             float maxConfidence = 0f;
 
-            // Estrategia 1: Detectar tipo (A/B/E) con patrones existentes
-            var strategies = new[]
-            {
-                ("InvoiceTypeAGrupo", _patterns["InvoiceTypeAGrupo"], 0.98f, "A", "001"),
-                ("InvoiceTypeBGrupo", _patterns["InvoiceTypeBGrupo"], 0.98f, "B", "006"),
-                ("InvoiceTypeEGrupo", _patterns["InvoiceTypeEGrupo"], 0.98f, "E", "019"),
-                ("InvoiceTypeAFactura", _patterns["InvoiceTypeAFactura"], 0.96f, "A", "001"),
-                ("InvoiceTypeBFactura", _patterns["InvoiceTypeBFactura"], 0.96f, "B", "006"),
-                ("InvoiceTypeEFactura", _patterns["InvoiceTypeEFactura"], 0.96f, "E", "019"),
-                ("InvoiceTypeASimple", _patterns["InvoiceTypeASimple"], 0.92f, "A", "001"),
-                ("InvoiceTypeBSimple", _patterns["InvoiceTypeBSimple"], 0.92f, "B", "006"),
-                ("InvoiceTypeESimple", _patterns["InvoiceTypeESimple"], 0.92f, "E", "019")
-            };
+            // ?? ESTRATEGIAS OPTIMIZADAS PARA TESSERACT
+            
+            // Estrategia 1: Buscar letras A/B/E cerca de códigos 001/006/019
+            var lettersA = Regex.Matches(text, @"\b[A]\b", RegexOptions.IgnoreCase);
+            var lettersB = Regex.Matches(text, @"\b[B]\b", RegexOptions.IgnoreCase);
+            var lettersE = Regex.Matches(text, @"\b[E]\b", RegexOptions.IgnoreCase);
+            var codes001 = Regex.Matches(text, @"\b001\b");
+            var codes006 = Regex.Matches(text, @"\b006\b");
+            var codes019 = Regex.Matches(text, @"\b019\b");
 
-            foreach (var (patternName, pattern, confidence, tipo, codigo) in strategies)
+            _logger.LogInformation("?? Conteos: A={A}, B={B}, E={E}, 001={C1}, 006={C6}, 019={C19}", 
+                lettersA.Count, lettersB.Count, lettersE.Count, codes001.Count, codes006.Count, codes019.Count);
+
+            // Correlacionar letras con códigos
+            if (lettersA.Count > 0 && codes001.Count > 0 && lettersB.Count == 0 && lettersE.Count == 0)
             {
-                var match = pattern.Match(text);
-                if (match.Success)
+                tipoDetectado = "A";
+                codigoDetectado = "001";
+                maxConfidence = 0.90f;
+                _logger.LogInformation("? Detectado por correlación única: A + 001");
+            }
+            else if (lettersB.Count > 0 && codes006.Count > 0 && lettersA.Count == 0 && lettersE.Count == 0)
+            {
+                tipoDetectado = "B";
+                codigoDetectado = "006";
+                maxConfidence = 0.90f;
+                _logger.LogInformation("? Detectado por correlación única: B + 006");
+            }
+            else if (lettersE.Count > 0 && codes019.Count > 0 && lettersA.Count == 0 && lettersB.Count == 0)
+            {
+                tipoDetectado = "E";
+                codigoDetectado = "019";
+                maxConfidence = 0.90f;
+                _logger.LogInformation("? Detectado por correlación única: E + 019");
+            }
+
+            // Estrategia 2: Solo códigos únicos
+            if (tipoDetectado == null)
+            {
+                if (codes001.Count > 0 && codes006.Count == 0 && codes019.Count == 0)
                 {
-                    tipoDetectado = tipo;
-                    codigoDetectado = codigo;
-                    maxConfidence = confidence;
-                    _logger.LogInformation("? Detectado con patrón {Pattern}: Tipo {Tipo}, Código {Codigo}", 
-                        patternName, tipo, codigo);
-                    return (tipoDetectado, codigoDetectado, maxConfidence);
+                    codigoDetectado = "001";
+                    tipoDetectado = "A"; // Auto-inferir
+                    maxConfidence = 0.85f;
+                    _logger.LogInformation("? Detectado código único 001 ? Tipo A");
+                }
+                else if (codes006.Count > 0 && codes001.Count == 0 && codes019.Count == 0)
+                {
+                    codigoDetectado = "006";
+                    tipoDetectado = "B"; // Auto-inferir
+                    maxConfidence = 0.85f;
+                    _logger.LogInformation("? Detectado código único 006 ? Tipo B");
+                }
+                else if (codes019.Count > 0 && codes001.Count == 0 && codes006.Count == 0)
+                {
+                    codigoDetectado = "019";
+                    tipoDetectado = "E"; // Auto-inferir
+                    maxConfidence = 0.85f;
+                    _logger.LogInformation("? Detectado código único 019 ? Tipo E");
                 }
             }
 
-            // Estrategia 2: Detectar solo códigos 001/006/019 si no se detectó el tipo
-            var codes001 = _patterns["Code001"].Matches(text);
-            var codes006 = _patterns["Code006"].Matches(text);
-            var codes019 = _patterns["Code019"].Matches(text);
-
-            if (codes001.Count > 0 && codes006.Count == 0 && codes019.Count == 0)
+            // Estrategia 3: Solo letras únicas
+            if (tipoDetectado == null)
             {
-                codigoDetectado = "001";
-                maxConfidence = 0.85f;
-                _logger.LogInformation("? Detectado solo código 001 (sin letra A explícita)");
-            }
-            else if (codes006.Count > 0 && codes001.Count == 0 && codes019.Count == 0)
-            {
-                codigoDetectado = "006";
-                maxConfidence = 0.85f;
-                _logger.LogInformation("? Detectado solo código 006 (sin letra B explícita)");
-            }
-            else if (codes019.Count > 0 && codes001.Count == 0 && codes006.Count == 0)
-            {
-                codigoDetectado = "019";
-                maxConfidence = 0.85f;
-                _logger.LogInformation("? Detectado solo código 019 (sin letra E explícita)");
-            }
-
-            // Estrategia 3: Detectar solo letras A/B/E si no se detectó el código
-            if (tipoDetectado == null && codigoDetectado == null)
-            {
-                var lettersA = _patterns["LetterAAlone"].Matches(text);
-                var lettersB = _patterns["LetterBAlone"].Matches(text);
-                var lettersE = _patterns["LetterEAlone"].Matches(text);
-
                 if (lettersA.Count > 0 && lettersB.Count == 0 && lettersE.Count == 0)
                 {
                     tipoDetectado = "A";
-                    maxConfidence = 0.75f;
-                    _logger.LogInformation("? Detectado solo letra A (sin código 001 explícito)");
+                    codigoDetectado = "001"; // Auto-inferir
+                    maxConfidence = 0.80f;
+                    _logger.LogInformation("? Detectado letra única A ? Código 001");
                 }
                 else if (lettersB.Count > 0 && lettersA.Count == 0 && lettersE.Count == 0)
                 {
                     tipoDetectado = "B";
-                    maxConfidence = 0.75f;
-                    _logger.LogInformation("? Detectado solo letra B (sin código 006 explícito)");
+                    codigoDetectado = "006"; // Auto-inferir
+                    maxConfidence = 0.80f;
+                    _logger.LogInformation("? Detectado letra única B ? Código 006");
                 }
                 else if (lettersE.Count > 0 && lettersA.Count == 0 && lettersB.Count == 0)
                 {
                     tipoDetectado = "E";
-                    maxConfidence = 0.75f;
-                    _logger.LogInformation("? Detectado solo letra E (sin código 019 explícito)");
+                    codigoDetectado = "019"; // Auto-inferir
+                    maxConfidence = 0.80f;
+                    _logger.LogInformation("? Detectado letra única E ? Código 019");
                 }
+            }
 
-                // Estrategia 4: Correlación entre letras y códigos
-                if (tipoDetectado == null && lettersA.Count > 0 && codes001.Count > 0)
+            // Estrategia 4: Patrones específicos con contexto
+            if (tipoDetectado == null)
+            {
+                var contextPatterns = new[]
                 {
-                    tipoDetectado = "A";
-                    codigoDetectado = "001";
-                    maxConfidence = 0.8f;
-                    _logger.LogInformation("? Detectado por correlación: A + 001");
-                }
-                else if (tipoDetectado == null && lettersB.Count > 0 && codes006.Count > 0)
+                    (new Regex(@"[A]\s+FACTURA", RegexOptions.IgnoreCase), "A", "001", 0.88f),
+                    (new Regex(@"[B]\s+FACTURA", RegexOptions.IgnoreCase), "B", "006", 0.88f),
+                    (new Regex(@"[E]\s+FACTURA", RegexOptions.IgnoreCase), "E", "019", 0.88f),
+                    (new Regex(@"CODIGO\s*N?\s*001", RegexOptions.IgnoreCase), "A", "001", 0.85f),
+                    (new Regex(@"CODIGO\s*N?\s*006", RegexOptions.IgnoreCase), "B", "006", 0.85f),
+                    (new Regex(@"CODIGO\s*N?\s*019", RegexOptions.IgnoreCase), "E", "019", 0.85f)
+                };
+
+                foreach (var (pattern, tipo, codigo, confidence) in contextPatterns)
                 {
-                    tipoDetectado = "B";
-                    codigoDetectado = "006";
-                    maxConfidence = 0.8f;
-                    _logger.LogInformation("? Detectado por correlación: B + 006");
-                }
-                else if (tipoDetectado == null && lettersE.Count > 0 && codes019.Count > 0)
-                {
-                    tipoDetectado = "E";
-                    codigoDetectado = "019";
-                    maxConfidence = 0.8f;
-                    _logger.LogInformation("? Detectado por correlación: E + 019");
+                    if (pattern.IsMatch(text))
+                    {
+                        tipoDetectado = tipo;
+                        codigoDetectado = codigo;
+                        maxConfidence = confidence;
+                        _logger.LogInformation("? Detectado por patrón de contexto: {Tipo} + {Codigo}", tipo, codigo);
+                        break;
+                    }
                 }
             }
 
             if (tipoDetectado == null && codigoDetectado == null)
             {
-                _logger.LogWarning("? No se pudo detectar tipo ni código de factura argentina");
+                _logger.LogWarning("?? No se pudo detectar tipo ni código de factura");
             }
 
             return (tipoDetectado, codigoDetectado, maxConfidence);
         }
 
+        /// <summary>
+        /// ?? PATRONES MEJORADOS PARA TESSERACT - Solo campos esenciales
+        /// </summary>
         private ExtractedCodeDto? DetectInvoiceNumber(string text)
         {
-            // Patrón específico para números de factura como "N° 00704-00128327"
+            _logger.LogInformation("?? Buscando número de factura con patrones optimizados para Tesseract...");
+            
+            // ?? PATRONES OPTIMIZADOS PARA TESSERACT
             var patterns = new[]
             {
-                new Regex(@"N[°º""\*]?\s*(\d{5}-\d{8})", RegexOptions.IgnoreCase),
-                new Regex(@"(?:factura|invoice|n[úu]mero|number|no\.?)\s*:?\s*([A-Z0-9\-]{8,20})", RegexOptions.IgnoreCase),
-                new Regex(@"(\d{4,5}-\d{6,10})", RegexOptions.IgnoreCase)
+                // Patrón principal: N° seguido de número tipo 00000-0000000
+                new Regex(@"N[º°""*]?\s*(\d{5}-\d{7,8})", RegexOptions.IgnoreCase),
+                
+                // Patrón directo para el formato específico: 00723-0019175
+                new Regex(@"\b(\d{5}-\d{7,8})\b"),
+                
+                // Patrón con más tolerancia a espacios/ruido
+                new Regex(@"(\d{5}\s*-\s*\d{7,8})", RegexOptions.IgnoreCase),
+                
+                // Patrón en contexto de factura
+                new Regex(@"factura[^\d]*?(\d{5}-\d{7,8})", RegexOptions.IgnoreCase),
+                
+                // Patrón después de código
+                new Regex(@"c[óo]digo[^\d]*?(\d{5}-\d{7,8})", RegexOptions.IgnoreCase)
             };
 
-            foreach (var pattern in patterns)
+            foreach (var (pattern, index) in patterns.Select((p, i) => (p, i)))
             {
-                var match = pattern.Match(text);
-                if (match.Success)
+                var matches = pattern.Matches(text);
+                foreach (Match match in matches)
                 {
-                    return new ExtractedCodeDto
+                    var number = match.Groups[1].Value.Trim().Replace(" ", "");
+                    
+                    // Validar formato exacto
+                    if (Regex.IsMatch(number, @"^\d{5}-\d{7,8}$"))
                     {
-                        Type = "InvoiceNumber",
-                        Value = match.Groups[1].Value.Trim(),
-                        Pattern = "InvoiceNumber",
-                        Confidence = 0.9f
-                    };
-                }
-            }
-
-            return null;
-        }
-
-        private ExtractedDateDto? DetectInvoiceDate(string text)
-        {
-            // Patrón específico para fechas como "Fecha: 20/05/2025"
-            var patterns = new[]
-            {
-                new Regex(@"(?:fecha|date):\s*(\d{1,2}\/\d{1,2}\/\d{4})", RegexOptions.IgnoreCase),
-                new Regex(@"\b(\d{1,2}\/\d{1,2}\/\d{4})\b"),
-                new Regex(@"\b(\d{1,2}-\d{1,2}-\d{4})\b"),
-                new Regex(@"\b(\d{1,2}\.\d{1,2}\.\d{4})\b")
-            };
-
-            foreach (var pattern in patterns)
-            {
-                var match = pattern.Match(text);
-                if (match.Success)
-                {
-                    if (DateTime.TryParseExact(match.Groups[1].Value, 
-                        new[] { "dd/MM/yyyy", "dd-MM-yyyy", "dd.MM.yyyy" }, 
-                        CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
-                    {
-                        return new ExtractedDateDto
+                        _logger.LogInformation("? Número de factura detectado con patrón #{Index}: {Number}", index + 1, number);
+                        
+                        return new ExtractedCodeDto
                         {
-                            Type = "InvoiceDate",
-                            ParsedDate = date,
-                            OriginalText = match.Groups[1].Value,
-                            Format = "DD/MM/YYYY",
-                            Confidence = 0.9f
+                            Type = "InvoiceNumber",
+                            Value = number,
+                            Pattern = $"InvoiceNumber_Pattern_{index + 1}",
+                            Confidence = index switch
+                            {
+                                0 => 0.95f, // Con N°
+                                1 => 0.92f, // Formato directo
+                                2 => 0.88f, // Con espacios
+                                _ => 0.85f  // Contexto
+                            }
                         };
                     }
                 }
             }
 
+            _logger.LogWarning("?? No se pudo detectar número de factura con formato válido");
             return null;
         }
 
+        /// <summary>
+        /// ?? DETECCIÓN MEJORADA DE FECHA PARA TESSERACT
+        /// </summary>
+        private ExtractedDateDto? DetectInvoiceDate(string text)
+        {
+            _logger.LogInformation("?? Buscando fecha de factura con patrones optimizados...");
+            
+            var patterns = new[]
+            {
+                // Patrón principal: "Fecha: DD/MM/YYYY"
+                new Regex(@"fecha:\s*(\d{1,2}\/\d{1,2}\/\d{4})", RegexOptions.IgnoreCase),
+                
+                // Patrón específico para formato "11/04/2025"
+                new Regex(@"\b(\d{1,2}\/\d{1,2}\/\d{4})\b"),
+                
+                // Con espacios/ruido por OCR
+                new Regex(@"(\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{4})"),
+                
+                // Con guiones
+                new Regex(@"\b(\d{1,2}-\d{1,2}-\d{4})\b"),
+                
+                // Formato con puntos
+                new Regex(@"\b(\d{1,2}\.\d{1,2}\.\d{4})\b")
+            };
+
+            foreach (var (pattern, index) in patterns.Select((p, i) => (p, i)))
+            {
+                var matches = pattern.Matches(text);
+                foreach (Match match in matches)
+                {
+                    var dateString = match.Groups[1].Value.Replace(" ", "");
+                    
+                    var formats = new[] { "dd/MM/yyyy", "dd-MM-yyyy", "dd.MM.yyyy", "d/M/yyyy", "d-M-yyyy", "d.M.yyyy" };
+                    
+                    foreach (var format in formats)
+                    {
+                        if (DateTime.TryParseExact(dateString, format, 
+                            CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+                        {
+                            // Validar rango razonable
+                            if (date >= new DateTime(2020, 1, 1) && date <= DateTime.Now.AddYears(1))
+                            {
+                                _logger.LogInformation("? Fecha detectada con patrón #{Index}: {Date}", index + 1, dateString);
+                                
+                                return new ExtractedDateDto
+                                {
+                                    Type = "InvoiceDate",
+                                    ParsedDate = date,
+                                    OriginalText = dateString,
+                                    Format = format,
+                                    Confidence = index switch
+                                    {
+                                        0 => 0.95f, // Con contexto "Fecha:"
+                                        1 => 0.90f, // Formato estándar
+                                        _ => 0.85f  // Otros formatos
+                                    }
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+
+            _logger.LogWarning("?? No se pudo detectar fecha de factura válida");
+            return null;
+        }
+
+        /// <summary>
+        /// ?? DETECCIÓN MEJORADA DE CUIT CLIENTE (SEGUNDO CUIT)
+        /// </summary>
         private ExtractedCodeDto? DetectClientCuitSecond(string text)
         {
             _logger.LogInformation("?? Buscando CUIT del cliente (segundo CUIT en el documento)...");
             
-            // Buscar todos los CUITs en el documento usando el patrón estándar
-            var cuitPattern = new Regex(@"\b(\d{2}-\d{8}-\d{1})\b");
-            var matches = cuitPattern.Matches(text);
-
-            _logger.LogInformation("?? Total de CUITs encontrados en el documento: {Count}", matches.Count);
-            
-            // Loggear todos los CUITs encontrados para debugging
-            for (int i = 0; i < matches.Count; i++)
+            // Patrones optimizados para Tesseract
+            var cuitPatterns = new[]
             {
-                _logger.LogInformation("CUIT #{Index}: {Cuit}", i + 1, matches[i].Groups[1].Value);
+                // Patrón estándar: XX-XXXXXXXX-X
+                new Regex(@"\b(\d{2}-\d{8}-\d{1})\b"),
+                
+                // Con espacios por OCR imperfecto: XX - XXXXXXXX - X
+                new Regex(@"\b(\d{2}\s*-\s*\d{8}\s*-\s*\d{1})\b"),
+                
+                // Sin guiones: XXXXXXXXXXX
+                new Regex(@"\b(\d{11})\b"),
+                
+                // En contexto específico de C.U.I.T
+                new Regex(@"C\.?U\.?I\.?T[.:\s]*(\d{2}[-\s]?\d{8}[-\s]?\d{1})", RegexOptions.IgnoreCase)
+            };
+
+            var allCuits = new List<(string cuit, float confidence, string pattern)>();
+
+            foreach (var (pattern, patternIndex) in cuitPatterns.Select((p, i) => (p, i)))
+            {
+                var matches = pattern.Matches(text);
+                foreach (Match match in matches)
+                {
+                    var rawCuit = match.Groups[1].Value;
+                    var normalizedCuit = NormalizeCuit(rawCuit);
+                    
+                    if (IsValidCuitFormat(normalizedCuit))
+                    {
+                        var confidence = patternIndex switch
+                        {
+                            0 => 0.95f, // Formato estándar
+                            1 => 0.90f, // Con espacios
+                            2 => 0.80f, // Sin separadores
+                            3 => 0.98f, // Contexto específico
+                            _ => 0.75f
+                        };
+                        
+                        allCuits.Add((normalizedCuit, confidence, $"CUIT_Pattern_{patternIndex + 1}"));
+                        _logger.LogInformation("?? CUIT #{Index} detectado: {Cuit}", allCuits.Count, normalizedCuit);
+                    }
+                }
             }
 
-            if (matches.Count >= 2)
+            // Eliminar duplicados manteniendo el de mayor confianza
+            var uniqueCuits = allCuits
+                .GroupBy(c => c.cuit)
+                .Select(g => g.OrderByDescending(c => c.confidence).First())
+                .ToList();
+
+            _logger.LogInformation("?? Total de CUITs únicos encontrados: {Count}", uniqueCuits.Count);
+            
+            if (uniqueCuits.Count >= 2)
             {
-                // Tomar el segundo CUIT (índice 1)
-                var secondCuit = matches[1].Groups[1].Value;
-                _logger.LogInformation("? CUIT del cliente seleccionado (segundo): {Cuit}", secondCuit);
+                // Tomar el segundo CUIT
+                var secondCuit = uniqueCuits[1];
+                _logger.LogInformation("? CUIT del cliente seleccionado (segundo): {Cuit}", secondCuit.cuit);
                 
                 return new ExtractedCodeDto
                 {
                     Type = "ClientCUIT",
-                    Value = secondCuit,
-                    Pattern = "CUIT_Second",
-                    Confidence = 0.95f
+                    Value = secondCuit.cuit,
+                    Pattern = secondCuit.pattern,
+                    Confidence = secondCuit.confidence
                 };
             }
-            else if (matches.Count == 1)
+            else if (uniqueCuits.Count == 1)
             {
-                // Si solo hay un CUIT, advertir pero tomarlo
-                var onlyCuit = matches[0].Groups[1].Value;
-                _logger.LogWarning("??  Solo se encontró un CUIT en el documento. Se asume que es del cliente: {Cuit}", onlyCuit);
+                var onlyCuit = uniqueCuits[0];
+                _logger.LogWarning("?? Solo se encontró un CUIT. Se asume que es del cliente: {Cuit}", onlyCuit.cuit);
                 
                 return new ExtractedCodeDto
                 {
                     Type = "ClientCUIT",
-                    Value = onlyCuit,
-                    Pattern = "CUIT_OnlyOne",
-                    Confidence = 0.7f // Menor confianza porque no estamos seguros
+                    Value = onlyCuit.cuit,
+                    Pattern = onlyCuit.pattern + "_OnlyOne",
+                    Confidence = Math.Max(onlyCuit.confidence - 0.2f, 0.5f)
                 };
             }
             else
             {
-                _logger.LogWarning("? No se encontraron CUITs en el documento");
+                _logger.LogWarning("? No se encontraron CUITs válidos en el documento");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Normaliza un CUIT a formato estándar XX-XXXXXXXX-X
+        /// </summary>
+        private string NormalizeCuit(string rawCuit)
+        {
+            if (string.IsNullOrEmpty(rawCuit))
+                return rawCuit;
+
+            // Limpiar espacios y caracteres extraños
+            var cleaned = Regex.Replace(rawCuit, @"[^\d\-]", "");
+            
+            // Si no tiene guiones, agregar formato estándar
+            if (cleaned.Length == 11 && !cleaned.Contains('-'))
+            {
+                return $"{cleaned.Substring(0, 2)}-{cleaned.Substring(2, 8)}-{cleaned.Substring(10, 1)}";
+            }
+            
+            // Si ya tiene guiones, validar formato
+            if (Regex.IsMatch(cleaned, @"^\d{2}-\d{8}-\d{1}$"))
+            {
+                return cleaned;
+            }
+            
+            return rawCuit; // Devolver original si no se puede normalizar
+        }
+
+        /// <summary>
+        /// Valida que un CUIT tenga el formato correcto
+        /// </summary>
+        private bool IsValidCuitFormat(string cuit)
+        {
+            if (string.IsNullOrEmpty(cuit))
+                return false;
+
+            return Regex.IsMatch(cuit, @"^\d{2}-\d{8}-\d{1}$");
         }
     }
 }

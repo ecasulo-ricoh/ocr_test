@@ -14,15 +14,18 @@ namespace OCR_test.Controllers
     {
         private readonly IDocuWareBulkUpdateService _bulkUpdateService;
         private readonly IDocuWareConfigurationService _configService;
+        private readonly IConfiguration _configuration;
         private readonly ILogger<DocuWareBulkController> _logger;
 
         public DocuWareBulkController(
             IDocuWareBulkUpdateService bulkUpdateService,
             IDocuWareConfigurationService configService,
+            IConfiguration configuration,
             ILogger<DocuWareBulkController> logger)
         {
             _bulkUpdateService = bulkUpdateService;
             _configService = configService;
+            _configuration = configuration;
             _logger = logger;
         }
 
@@ -39,6 +42,9 @@ namespace OCR_test.Controllers
         {
             try
             {
+                // ? USAR LÍMITE CONFIGURADO EN APPSETTINGS
+                var maxDocumentLimit = _configuration.GetValue<int>("BulkUpdate:MaxDocumentLimit", 5000);
+
                 // Validaciones
                 if (request.DocumentCount <= 0)
                 {
@@ -49,21 +55,22 @@ namespace OCR_test.Controllers
                     });
                 }
 
-                if (request.DocumentCount > 1000)
+                if (request.DocumentCount > maxDocumentLimit)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "La cantidad máxima de documentos por lote es 1000"
+                        message = $"La cantidad máxima de documentos por lote es {maxDocumentLimit:N0} (configurado en appsettings.json)",
+                        maxAllowed = maxDocumentLimit
                     });
                 }
 
                 var mode = request.DryRun ? "DRY-RUN (simulación)" : "ACTUALIZACIÓN REAL";
                 var updateMode = request.OnlyUpdateEmptyFields ? "SOLO CAMPOS VACÍOS" : "SOBRESCRIBIR TODOS";
-                var fileCabinetId = _configService.GetFileCabinetId(); // Siempre usar el del appsettings
-                var language = "spa+eng"; // Idioma por defecto
+                var fileCabinetId = _configService.GetFileCabinetId();
+                var language = "spa+eng";
 
-                _logger.LogInformation("?? Iniciando actualización masiva: {Count} documentos en modo {Mode}, " +
+                _logger.LogInformation("?? Iniciando procesamiento on-the-fly: {Count:N0} documentos en modo {Mode}, " +
                     "Actualización: {UpdateMode}, FileCabinet: {FileCabinetId}, Idioma: {Language}",
                     request.DocumentCount, mode, updateMode, fileCabinetId, language);
 
@@ -77,7 +84,7 @@ namespace OCR_test.Controllers
                     Language = language
                 };
 
-                // Ejecutar actualización masiva
+                // Ejecutar procesamiento on-the-fly
                 var result = await _bulkUpdateService.BulkUpdateDocumentsAsync(internalRequest);
 
                 // Preparar respuesta detallada
@@ -88,10 +95,10 @@ namespace OCR_test.Controllers
                     summary = new
                     {
                         totalProcessed = result.TotalProcessed,
-                        documentsModified = result.SuccessfulUpdates,  // Cambiar nombre para mayor claridad
+                        documentsModified = result.SuccessfulUpdates,
                         documentsWithErrors = result.FailedUpdates,
                         documentsWithoutChanges = result.SkippedDocuments,
-                        modificationRate = result.TotalProcessed > 0   // Cambiar de successRate a modificationRate
+                        modificationRate = result.TotalProcessed > 0
                             ? Math.Round((double)result.SuccessfulUpdates / result.TotalProcessed * 100, 2) 
                             : 0
                     },
@@ -104,6 +111,7 @@ namespace OCR_test.Controllers
                         startTime = result.Metadata.StartTime,
                         endTime = result.Metadata.EndTime,
                         totalTimeMs = result.Metadata.TotalProcessingTimeMs,
+                        maxDocumentLimit = maxDocumentLimit,
                         performance = new
                         {
                             documentsPerSecond = Math.Round(result.Metadata.Performance.DocumentsPerSecond, 2),
@@ -145,7 +153,7 @@ namespace OCR_test.Controllers
                 var statusCode = result.Success ? StatusCodes.Status200OK : StatusCodes.Status500InternalServerError;
 
                 // Log de resumen final
-                _logger.LogInformation("?? Actualización masiva finalizada. " +
+                _logger.LogInformation("?? Procesamiento on-the-fly finalizado. " +
                     "Modificados: {Modified}/{Total} ({ModificationRate}%), " +
                     "Errores: {Errors}, Sin cambios: {NoChanges}, " +
                     "Tiempo total: {TotalMs}ms, " +
@@ -162,11 +170,11 @@ namespace OCR_test.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error en actualización masiva de documentos");
+                _logger.LogError(ex, "Error en procesamiento on-the-fly de documentos");
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Error interno en actualización masiva",
+                    message = "Error interno en procesamiento on-the-fly",
                     error = ex.Message,
                     requestedAt = DateTime.UtcNow
                 });
@@ -174,11 +182,12 @@ namespace OCR_test.Controllers
         }
 
         /// <summary>
-        /// Obtiene la lista de documentos que se procesarían (sin ejecutar OCR ni actualización)
+        /// Obtiene la lista de documentos que se procesarían (SOLO INFORMATIVO - no se usa en el procesamiento real)
+        /// ?? El procesamiento real ahora funciona on-the-fly sin obtener listas previas
         /// </summary>
-        /// <param name="count">Cantidad de documentos</param>
+        /// <param name="count">Cantidad de documentos (máximo 100 para endpoint informativo)</param>
         /// <param name="fileCabinetId">ID del FileCabinet (opcional)</param>
-        /// <returns>Lista de IDs de documentos</returns>
+        /// <returns>Lista de IDs de documentos encontrados</returns>
         [HttpGet("document-list")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -189,29 +198,37 @@ namespace OCR_test.Controllers
         {
             try
             {
-                if (count <= 0 || count > 1000)
+                // Limitar a 100 para endpoint informativo
+                var maxInformativeLimit = 100;
+
+                if (count <= 0 || count > maxInformativeLimit)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "La cantidad debe estar entre 1 y 1000"
+                        message = $"Para endpoint informativo, la cantidad debe estar entre 1 y {maxInformativeLimit}",
+                        maxAllowed = maxInformativeLimit,
+                        note = "El procesamiento real funciona on-the-fly sin límites de este endpoint"
                     });
                 }
 
                 var fcId = fileCabinetId ?? _configService.GetFileCabinetId();
-                _logger.LogInformation("?? Obteniendo lista de {Count} documentos del FileCabinet {FileCabinetId}", count, fcId);
+                _logger.LogInformation("?? Obteniendo lista informativa de {Count} documentos del FileCabinet {FileCabinetId}", count, fcId);
 
                 var documentIds = await _bulkUpdateService.GetDocumentListAsync(fcId, count);
 
                 return Ok(new
                 {
                     success = true,
-                    message = $"Lista de {documentIds.Count} documentos obtenida exitosamente",
+                    message = $"Lista informativa de {documentIds.Count} documentos obtenida exitosamente",
+                    note = "Esta es solo una muestra informativa. El procesamiento real funciona on-the-fly sin obtener listas previas.",
                     data = new
                     {
                         fileCabinetId = fcId,
                         requestedCount = count,
                         actualCount = documentIds.Count,
+                        maxInformativeLimit = maxInformativeLimit,
+                        processingMode = "ON_THE_FLY",
                         documentIds = documentIds
                     },
                     requestedAt = DateTime.UtcNow
@@ -219,11 +236,11 @@ namespace OCR_test.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error obteniendo lista de documentos");
+                _logger.LogError(ex, "Error obteniendo lista informativa de documentos");
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Error obteniendo lista de documentos",
+                    message = "Error obteniendo lista informativa de documentos",
                     error = ex.Message,
                     requestedAt = DateTime.UtcNow
                 });
@@ -238,62 +255,73 @@ namespace OCR_test.Controllers
         [ProducesResponseType(StatusCodes.Status200OK)]
         public IActionResult GetFieldMapping()
         {
+            var maxDocumentLimit = _configuration.GetValue<int>("BulkUpdate:MaxDocumentLimit", 5000);
+
             var mapping = new
             {
-                description = "Mapeo de campos OCR a campos DocuWare para facturas argentinas",
-                ocrToDocuWareMapping = new[]
+                description = "Mapeo de campos OCR a campos DocuWare para facturas argentinas - Archivador Bimbo",
+                processingMode = "ON_THE_FLY",
+                maxDocumentLimit = maxDocumentLimit,
+                ocrToDocuWareMapping = new object[]
                 {
                     new { 
                         ocrField = "tipoFactura", 
-                        docuWareField = "LETRA_DOCUMENTO", 
-                        description = "Tipo de factura (A o B)",
+                        docuWareField = "LETRA", 
+                        description = "Tipo de factura (A, B o E)",
+                        validValues = new[] { "A", "B", "E" },
                         example = "A"
                     },
                     new { 
                         ocrField = "codigoFactura", 
-                        docuWareField = "CODIGO_DOCUMENTO", 
-                        description = "Código de factura (001 para A, 006 para B)",
+                        docuWareField = "CODIGO", 
+                        description = "Código de factura (001 para A, 006 para B, 019 para E)",
+                        validValues = new[] { "001", "006", "019" },
                         example = "001"
                     },
                     new { 
                         ocrField = "nroFactura", 
                         docuWareField = "NDEG_FACTURA", 
                         description = "Número de la factura",
-                        example = "00704-00128327"
+                        format = "XXXXX-XXXXXXXX",
+                        example = "00723-0019175"
                     },
                     new { 
                         ocrField = "fechaFactura", 
                         docuWareField = "DATE", 
                         description = "Fecha de la factura en formato DD/MM/yyyy",
-                        example = "20/05/2025"
+                        format = "DD/MM/YYYY",
+                        example = "11/04/2025"
                     },
                     new { 
                         ocrField = "cuitCliente", 
                         docuWareField = "CUIT_CLIENTE", 
                         description = "CUIT del cliente (SIEMPRE el segundo CUIT que aparece en el documento)",
-                        example = "30-58584975-1"
+                        format = "XX-XXXXXXXX-X",
+                        example = "30-59036070-3"
                     }
                 },
-                excludedFields = new[]
+                processingFeatures = new[]
                 {
-                    new { 
-                        field = "razonSocialCliente", 
-                        reason = "Campo eliminado - ya no se procesa ni actualiza"
-                    }
+                    "Procesamiento on-the-fly: encuentra y procesa documentos inmediatamente",
+                    "Patrones optimizados para Tesseract sin preprocesamiento pesado",
+                    "Detección inteligente de tipos A/B/E con auto-completado",
+                    "Selección automática del segundo CUIT como cliente",
+                    "Manejo de valores placeholder configurables"
                 },
                 notes = new[]
                 {
                     "Solo se actualizan campos que tienen valores válidos detectados por OCR",
                     "El modo DRY-RUN permite simular actualizaciones sin modificar datos",
-                    "Los documentos se procesan desde el más reciente al más antiguo",
-                    "Se requiere confianza mínima en la detección OCR para actualizar campos"
+                    "Los documentos se buscan y procesan on-the-fly sin listas previas",
+                    "Se requiere confianza mínima en la detección OCR para actualizar campos",
+                    $"Límite máximo configurable: {maxDocumentLimit:N0} documentos por lote"
                 }
             };
 
             return Ok(new
             {
                 success = true,
-                message = "Información de mapeo de campos",
+                message = "Información de mapeo de campos optimizado para Bimbo",
                 data = mapping,
                 requestedAt = DateTime.UtcNow
             });
